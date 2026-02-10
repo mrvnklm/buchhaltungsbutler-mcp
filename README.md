@@ -61,19 +61,35 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 ## Cloudflare Workers Deployment
 
-The server can also run as a Cloudflare Worker using the Streamable HTTP transport for remote access.
+The server can also run as a Cloudflare Worker using the Streamable HTTP transport for remote access. Credentials are passed per-request via client headers.
 
-### Setup
+### Deploy
 
 ```bash
-# Set your API credentials as Worker secrets
-npx wrangler secret put BB_API_CLIENT
-npx wrangler secret put BB_API_SECRET
-npx wrangler secret put BB_API_KEY
-
-# Deploy
+npm run build
 npm run deploy
 ```
+
+### Claude Desktop Configuration (remote)
+
+Credentials are sent via headers on every request — no server-side secrets needed:
+
+```json
+{
+  "mcpServers": {
+    "buchhaltungsbutler": {
+      "url": "https://buchhaltungsbutler-mcp.<your-subdomain>.workers.dev/mcp",
+      "headers": {
+        "x-bb-api-client": "your-api-client",
+        "x-bb-api-secret": "your-api-secret",
+        "x-bb-api-key": "your-api-key"
+      }
+    }
+  }
+}
+```
+
+Optionally, you can also set credentials as Worker secrets (`npx wrangler secret put BB_API_CLIENT` etc.) as a fallback — client headers take priority.
 
 ### Local Development
 
