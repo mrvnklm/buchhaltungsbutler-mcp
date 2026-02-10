@@ -1,8 +1,15 @@
+export interface RetryConfig {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+}
+
 export interface BbConfig {
   apiClient: string;
   apiSecret: string;
   apiKey: string;
   baseUrl: string;
+  retry?: RetryConfig;
 }
 
 export interface ApiResponse<T = unknown> {

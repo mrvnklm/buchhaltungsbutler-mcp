@@ -19,10 +19,24 @@ export function loadConfig(env?: Record<string, string | undefined>): BbConfig {
     );
   }
 
+  const retryMaxAttempts = get("BB_RETRY_MAX_ATTEMPTS");
+  const retryBaseDelay = get("BB_RETRY_BASE_DELAY_MS");
+  const retryMaxDelay = get("BB_RETRY_MAX_DELAY_MS");
+
+  const retry =
+    retryMaxAttempts || retryBaseDelay || retryMaxDelay
+      ? {
+          maxAttempts: retryMaxAttempts ? parseInt(retryMaxAttempts, 10) : 3,
+          baseDelayMs: retryBaseDelay ? parseInt(retryBaseDelay, 10) : 1000,
+          maxDelayMs: retryMaxDelay ? parseInt(retryMaxDelay, 10) : 8000,
+        }
+      : undefined;
+
   return {
     apiClient,
     apiSecret,
     apiKey,
     baseUrl: get("BB_API_BASE_URL") ?? "https://webapp.buchhaltungsbutler.de/api/v1",
+    ...(retry && { retry }),
   };
 }

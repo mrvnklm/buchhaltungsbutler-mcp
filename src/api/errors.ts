@@ -19,6 +19,16 @@ export class ApiError extends Error {
     this.name = "ApiError";
   }
 
+  isTransient(): boolean {
+    return this.errorCode === 15 || this.errorCode === 30;
+  }
+
+  static isTransientError(error: unknown): boolean {
+    if (error instanceof ApiError) return error.isTransient();
+    if (error instanceof TypeError) return true; // network failures
+    return false;
+  }
+
   toText(): string {
     return `Error ${this.errorCode}: ${this.message}`;
   }

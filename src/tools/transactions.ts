@@ -10,6 +10,7 @@ import type {
   AssignedTransactionItem,
 } from "../types/api-responses.js";
 import { formatList, formatSingle, formatSuccess, formatBatchResult } from "../utils/formatters.js";
+import { fetchAllPages } from "../utils/pagination.js";
 import { dateSchema, dateTimeSchema, currencySchema } from "../utils/validators.js";
 
 export function registerTransactionsTools(server: McpServer, client: BbClient): void {
@@ -25,6 +26,8 @@ export function registerTransactionsTools(server: McpServer, client: BbClient): 
       to_from: z.string().optional().describe("Filter by sender/recipient"),
       limit: z.number().int().min(1).max(500).optional().describe("Max results (1-500)"),
       offset: z.number().int().min(0).optional().describe("Offset for pagination"),
+      auto_paginate: z.boolean().optional().describe("Fetch all pages automatically (default: false)"),
+      max_results: z.number().int().min(1).optional().describe("Maximum number of results to return in the response"),
     },
     async (params) => {
       try {
@@ -38,11 +41,24 @@ export function registerTransactionsTools(server: McpServer, client: BbClient): 
         if (params.limit !== undefined) requestParams.limit = params.limit;
         if (params.offset !== undefined) requestParams.offset = params.offset;
 
-        const res = await client.request<ApiResponse<TransactionListItem[]>>("/transactions/get", requestParams);
+        let data: TransactionListItem[];
+        let totalRows: number | undefined;
+
+        if (params.auto_paginate) {
+          const result = await fetchAllPages<TransactionListItem>(client, "/transactions/get", requestParams, { pageSize: 500 });
+          data = result.data;
+          totalRows = result.totalRows;
+        } else {
+          const res = await client.request<ApiResponse<TransactionListItem[]>>("/transactions/get", requestParams);
+          data = res.data ?? [];
+          totalRows = res.rows;
+        }
+
         return {
           content: [{
             type: "text" as const,
-            text: formatList("Transactions", res.data ?? [], res.rows),
+            text: formatList("Transactions", data, totalRows,
+              params.max_results ? { maxItems: params.max_results } : undefined),
           }],
         };
       } catch (error) {

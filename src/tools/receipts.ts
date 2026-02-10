@@ -5,7 +5,61 @@ import { ApiError } from "../api/errors.js";
 import type { ApiResponse, BatchResponse } from "../types/common.js";
 import type { ReceiptListItem, ReceiptDetail } from "../types/api-responses.js";
 import { formatList, formatSingle, formatSuccess, formatBatchResult } from "../utils/formatters.js";
+import { fetchAllPages } from "../utils/pagination.js";
 import { dateSchema, receiptTypeSchema, listDirectionSchema, currencySchema } from "../utils/validators.js";
+
+const ALLOWED_CONTENT_TYPES = new Set([
+  "application/pdf",
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+]);
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+async function fetchFileFromUrl(url: string): Promise<{ base64: string; fileName: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch file: HTTP ${response.status}`);
+    }
+
+    const contentType = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
+    if (contentType && !ALLOWED_CONTENT_TYPES.has(contentType)) {
+      throw new Error(`Unsupported file type: ${contentType}. Allowed: PDF, PNG, JPG`);
+    }
+
+    const contentLength = response.headers.get("content-length");
+    if (contentLength && parseInt(contentLength, 10) > MAX_FILE_SIZE) {
+      throw new Error(`File too large: ${contentLength} bytes (max ${MAX_FILE_SIZE})`);
+    }
+
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength > MAX_FILE_SIZE) {
+      throw new Error(`File too large: ${buffer.byteLength} bytes (max ${MAX_FILE_SIZE})`);
+    }
+
+    const bytes = new Uint8Array(buffer);
+    // Convert to base64 without Buffer (works in Node.js and Cloudflare Workers)
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const base64 = btoa(binary);
+
+    // Extract filename from URL path
+    const urlPath = new URL(url).pathname;
+    const fileName = urlPath.split("/").pop() || "receipt";
+
+    return { base64, fileName };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 export function registerReceiptsTools(server: McpServer, client: BbClient): void {
   server.tool(
@@ -24,6 +78,8 @@ export function registerReceiptsTools(server: McpServer, client: BbClient): void
       deleted: z.boolean().optional().describe("Include deleted receipts"),
       invoicenumber: z.string().optional().describe("Filter by invoice number"),
       due_date: dateSchema.optional().describe("Filter by due date (YYYY-MM-DD)"),
+      auto_paginate: z.boolean().optional().describe("Fetch all pages automatically (default: false)"),
+      max_results: z.number().int().min(1).optional().describe("Maximum number of results to return in the response"),
     },
     async (params) => {
       try {
@@ -42,11 +98,24 @@ export function registerReceiptsTools(server: McpServer, client: BbClient): void
         if (params.invoicenumber !== undefined) requestParams.invoicenumber = params.invoicenumber;
         if (params.due_date !== undefined) requestParams.due_date = params.due_date;
 
-        const res = await client.request<ApiResponse<ReceiptListItem[]>>("/receipts/get", requestParams);
+        let data: ReceiptListItem[];
+        let totalRows: number | undefined;
+
+        if (params.auto_paginate) {
+          const result = await fetchAllPages<ReceiptListItem>(client, "/receipts/get", requestParams, { pageSize: 500 });
+          data = result.data;
+          totalRows = result.totalRows;
+        } else {
+          const res = await client.request<ApiResponse<ReceiptListItem[]>>("/receipts/get", requestParams);
+          data = res.data ?? [];
+          totalRows = res.rows;
+        }
+
         return {
           content: [{
             type: "text" as const,
-            text: formatList("Receipts", res.data ?? [], res.rows),
+            text: formatList("Receipts", data, totalRows,
+              params.max_results ? { maxItems: params.max_results } : undefined),
           }],
         };
       } catch (error) {
@@ -202,9 +271,10 @@ export function registerReceiptsTools(server: McpServer, client: BbClient): void
 
   server.tool(
     "upload_receipt",
-    "Upload a receipt file (base64-encoded) with optional metadata",
+    "Upload a receipt file (base64-encoded or from URL) with optional metadata",
     {
-      file: z.string().describe("Base64-encoded file content"),
+      file: z.string().optional().describe("Base64-encoded file content (provide this OR file_url)"),
+      file_url: z.string().url().optional().describe("URL to fetch the receipt file from (alternative to base64 file). Supports PDF, PNG, JPG up to 10MB."),
       type: receiptTypeSchema.describe("Receipt type"),
       file_name: z.string().optional().describe("File name (recommended for base64 uploads)"),
       account: z.number().int().optional().describe("Payment account ID"),
@@ -222,11 +292,41 @@ export function registerReceiptsTools(server: McpServer, client: BbClient): void
     },
     async (params) => {
       try {
+        // Validate exactly one of file or file_url
+        if (!params.file && !params.file_url) {
+          return {
+            content: [{ type: "text" as const, text: "Error: Either 'file' (base64) or 'file_url' must be provided" }],
+            isError: true,
+          };
+        }
+        if (params.file && params.file_url) {
+          return {
+            content: [{ type: "text" as const, text: "Error: Provide either 'file' or 'file_url', not both" }],
+            isError: true,
+          };
+        }
+
+        let fileContent = params.file!;
+        let fileName = params.file_name;
+
+        if (params.file_url) {
+          try {
+            const fetched = await fetchFileFromUrl(params.file_url);
+            fileContent = fetched.base64;
+            if (!fileName) fileName = fetched.fileName;
+          } catch (err) {
+            return {
+              content: [{ type: "text" as const, text: `Error fetching file from URL: ${err instanceof Error ? err.message : String(err)}` }],
+              isError: true,
+            };
+          }
+        }
+
         const requestParams: Record<string, unknown> = {
-          file: params.file,
+          file: fileContent,
           type: params.type,
         };
-        if (params.file_name !== undefined) requestParams.file_name = params.file_name;
+        if (fileName !== undefined) requestParams.file_name = fileName;
         if (params.account !== undefined) requestParams.account = params.account;
         if (params.creditor_debtor !== undefined) requestParams.creditor_debtor = params.creditor_debtor;
         if (params.counterparty !== undefined) requestParams.counterparty = params.counterparty;
@@ -245,7 +345,7 @@ export function registerReceiptsTools(server: McpServer, client: BbClient): void
           content: [{
             type: "text" as const,
             text: formatSuccess(res.message ?? "Receipt uploaded", {
-              file_name: params.file_name,
+              file_name: fileName,
               type: params.type,
               counterparty: params.counterparty,
             }),

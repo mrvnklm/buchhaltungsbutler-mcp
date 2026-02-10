@@ -8,17 +8,28 @@ type AnyRecord = Record<string, any>;
 export function formatList(
   title: string,
   items: unknown[],
-  totalRows?: number
+  totalRows?: number,
+  options?: { maxItems?: number }
 ): string {
   if (items.length === 0) return `${title}: No results found.`;
 
+  const maxItems = options?.maxItems ?? 100;
+  const truncated = items.length > maxItems;
+  const displayItems = truncated ? items.slice(0, maxItems) : items;
+
   const header = totalRows !== undefined
-    ? `${title} (${items.length} of ${totalRows} total)`
-    : `${title} (${items.length} results)`;
+    ? `${title} (${displayItems.length} of ${totalRows} total)`
+    : `${title} (${displayItems.length} results)`;
 
-  const formatted = items.map((item, i) => formatItem(item as AnyRecord, i + 1)).join("\n\n");
+  const formatted = displayItems.map((item, i) => formatItem(item as AnyRecord, i + 1)).join("\n\n");
 
-  return `${header}\n${"─".repeat(50)}\n${formatted}`;
+  let result = `${header}\n${"─".repeat(50)}\n${formatted}`;
+
+  if (truncated) {
+    result += `\n\n... and ${items.length - maxItems} more items (${items.length} total, showing first ${maxItems})`;
+  }
+
+  return result;
 }
 
 export function formatSingle(title: string, item: unknown): string {

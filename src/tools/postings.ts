@@ -5,6 +5,7 @@ import { ApiError } from "../api/errors.js";
 import type { ApiResponse, BatchResponse } from "../types/common.js";
 import type { PostingItem } from "../types/api-responses.js";
 import { formatList, formatSuccess, formatBatchResult } from "../utils/formatters.js";
+import { fetchAllPages } from "../utils/pagination.js";
 import { dateSchema, vatCodeSchema } from "../utils/validators.js";
 
 export function registerPostingsTools(server: McpServer, client: BbClient): void {
@@ -23,6 +24,8 @@ export function registerPostingsTools(server: McpServer, client: BbClient): void
       order: z.string().optional().describe("Sort order: 'default', 'date ASC', 'date DESC', 'date_last_action ASC', 'date_last_action DESC', 'id_by_customer ASC', 'id_by_customer DESC'"),
       limit: z.number().int().min(1).max(1000).optional().describe("Maximum number of results (max 1000)"),
       offset: z.number().int().min(0).optional().describe("Offset for pagination"),
+      auto_paginate: z.boolean().optional().describe("Fetch all pages automatically (default: false)"),
+      max_results: z.number().int().min(1).optional().describe("Maximum number of results to return in the response"),
     },
     async (params) => {
       try {
@@ -40,11 +43,24 @@ export function registerPostingsTools(server: McpServer, client: BbClient): void
         if (params.limit !== undefined) requestParams.limit = params.limit;
         if (params.offset !== undefined) requestParams.offset = params.offset;
 
-        const res = await client.request<ApiResponse<PostingItem[]>>("/postings/get", requestParams);
+        let data: PostingItem[];
+        let totalRows: number | undefined;
+
+        if (params.auto_paginate) {
+          const result = await fetchAllPages<PostingItem>(client, "/postings/get", requestParams, { pageSize: 1000 });
+          data = result.data;
+          totalRows = result.totalRows;
+        } else {
+          const res = await client.request<ApiResponse<PostingItem[]>>("/postings/get", requestParams);
+          data = res.data ?? [];
+          totalRows = res.rows;
+        }
+
         return {
           content: [{
             type: "text" as const,
-            text: formatList("Postings", res.data ?? [], res.rows),
+            text: formatList("Postings", data, totalRows,
+              params.max_results ? { maxItems: params.max_results } : undefined),
           }],
         };
       } catch (error) {
