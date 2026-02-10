@@ -14,7 +14,7 @@ import { registerInvoicesTools } from "./tools/invoices.js";
 export function createServer(config: BbConfig): McpServer {
   const server = new McpServer({
     name: "buchhaltungsbutler",
-    version: "1.0.0",
+    version: "1.1.0",
   });
 
   const client = new BbClient(config);

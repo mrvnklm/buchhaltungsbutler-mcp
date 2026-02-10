@@ -8,7 +8,13 @@ An MCP (Model Context Protocol) server that connects AI assistants like Claude t
 ## Features
 
 - **25 tools** covering the full BuchhaltungsButler API surface
+- **5 MCP resources** for context injection (accounts, posting accounts, cost locations, creditors, debtors)
 - **Batch operations** for receipts, transactions, postings, debtors, and creditors (up to 50 items)
+- **Retry with backoff** on transient errors (rate limit, timeout, network failure) with configurable attempts
+- **Caching layer** for static endpoints (accounts, posting accounts, cost locations) with TTL and write-triggered invalidation
+- **Auto-pagination** fetches all pages automatically via `auto_paginate` parameter on list tools
+- **Response truncation** with configurable `max_results` to prevent token overflow on large result sets
+- **File upload from URL** in `upload_receipt` — accepts a URL, fetches server-side with content-type and size validation
 - **Rate limiting** with per-bucket throttling (general, batch, upload)
 - **E-invoicing** support (XRechnung/ZUGFeRD) with structured tax data
 - **Cloudflare Workers** deployment via Streamable HTTP transport
@@ -113,7 +119,7 @@ The MCP endpoint will be available at `http://localhost:8787/mcp`.
 | `list_receipts` | List receipts (Belege) with filters (direction, dates, status, counterparty) |
 | `get_receipt` | Get a single receipt by ID, optionally including file content |
 | `create_receipt` | Create one or batch (up to 50) receipts |
-| `upload_receipt` | Upload a receipt file (base64) with optional metadata |
+| `upload_receipt` | Upload a receipt file (base64 or URL) with optional metadata |
 | `manage_receipt` | Delete or restore a receipt |
 
 ### Postings
@@ -159,9 +165,12 @@ src/
   index-cloudflare.ts      # Cloudflare Workers entry point
   server.ts                # MCP server factory
   api/
-    client.ts              # HTTP client with rate limiting
+    client.ts              # HTTP client with retry, caching, rate limiting
+    cache.ts               # In-memory TTL cache with write invalidation
     rate-limiter.ts        # Token bucket rate limiter
-    errors.ts              # API error types
+    errors.ts              # API error types with transient detection
+  resources/
+    index.ts               # MCP resource registrations (5 resources)
   tools/
     accounts.ts            # 2 tools
     transactions.ts        # 5 tools
@@ -172,12 +181,13 @@ src/
     cost-locations.ts      # 2 tools
     comments.ts            # 1 tool
   types/
-    common.ts              # Shared types (BbConfig, ApiResponse, etc.)
+    common.ts              # Shared types (BbConfig, RetryConfig, ApiResponse, etc.)
     api-responses.ts       # API response type definitions
     api-params.ts          # API parameter type definitions
   utils/
     config.ts              # Environment config loader
-    formatters.ts          # LLM-friendly output formatting
+    formatters.ts          # LLM-friendly output formatting with truncation
+    pagination.ts          # Auto-pagination helper for list endpoints
     validators.ts          # Shared Zod schemas (dates, currencies, etc.)
 ```
 
@@ -197,21 +207,33 @@ src/
 | `BB_API_SECRET` | Yes | - | API client secret |
 | `BB_API_KEY` | Yes | - | API key |
 | `BB_API_BASE_URL` | No | `https://webapp.buchhaltungsbutler.de/api/v1` | API base URL |
+| `BB_RETRY_MAX_ATTEMPTS` | No | `3` | Max retry attempts on transient errors |
+| `BB_RETRY_BASE_DELAY_MS` | No | `1000` | Base delay for exponential backoff (ms) |
+| `BB_RETRY_MAX_DELAY_MS` | No | `8000` | Max delay cap for backoff (ms) |
+
+## MCP Resources
+
+The server exposes 5 MCP resources for LLM context injection:
+
+| Resource URI | Description |
+|-------------|-------------|
+| `bb://accounts` | All payment/bank accounts |
+| `bb://posting-accounts` | Chart of accounts (Kontenrahmen) |
+| `bb://cost-locations` | All cost centers (Kostenstellen) |
+| `bb://creditors/{id}` | Single creditor by posting account number |
+| `bb://debtors/{id}` | Single debtor by posting account number |
+
+Resources are read-only and benefit from the caching layer automatically.
 
 ## Future Improvements
 
-- **OAuth/token-based auth**: Support for user-level auth flows beyond Basic Auth
-- **Webhook support**: Listen for BB webhook events (payment received, receipt processed)
-- **Caching layer**: Cache read-only responses (accounts, posting accounts) with configurable TTL
-- **Pagination helpers**: Auto-paginate large result sets across multiple API calls
-- **File upload from URL**: Accept URLs in `upload_receipt` and fetch the file server-side
-- **MCP Resources**: Expose accounts/creditors/debtors as MCP resources for context injection
-- **MCP Prompts**: Pre-built prompts for common workflows (monthly closing, VAT reconciliation)
-- **Retry with backoff**: Auto-retry on transient errors (timeout, rate limit) with exponential backoff
-- **Response streaming**: Stream large result sets for better LLM context handling
-- **Multi-tenant**: Support multiple BB accounts via dynamic credential switching
-- **Audit logging**: Log all write operations for compliance tracking
 - **DATEV export integration**: Tools for generating DATEV-compatible export files
+- **MCP Prompts**: Pre-built prompts for common workflows (monthly closing, VAT reconciliation)
+- **Audit logging**: Log all write operations for compliance tracking
+- **Multi-tenant**: Support multiple BB accounts via dynamic credential switching
+- **Response streaming**: Stream large result sets for better LLM context handling
+- **Webhook support**: Listen for BB webhook events (payment received, receipt processed)
+- **OAuth/token-based auth**: Support for user-level auth flows beyond Basic Auth
 
 ## License
 
