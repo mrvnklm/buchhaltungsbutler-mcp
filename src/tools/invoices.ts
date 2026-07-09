@@ -113,13 +113,14 @@ export function registerInvoicesTools(server: McpServer, client: BbClient): void
     payment_reference: z.string().optional().describe("Payment reference"),
   } as const;
 
-  const eInvoiceInputSchema = z.object(eInvoiceShape).superRefine((data, ctx) => {
-    data.item_tax_type.forEach((taxType, index) => {
-      if (taxType === "S" && data.item_tax_amount?.[index] === undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+  const eInvoiceInputSchema = z.object(eInvoiceShape).check((payload) => {
+    payload.value.item_tax_type.forEach((taxType, index) => {
+      if (taxType === "S" && payload.value.item_tax_amount?.[index] === undefined) {
+        payload.issues.push({
+          code: "custom",
           message: `item_tax_amount is required at the same index where item_tax_type is "S"`,
           path: ["item_tax_amount", index],
+          input: payload.value.item_tax_amount?.[index],
         });
       }
     });

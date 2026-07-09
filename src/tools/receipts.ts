@@ -364,7 +364,7 @@ export function registerReceiptsTools(server: McpServer, client: BbClient): void
     "Upload a receipt file (base64-encoded or from URL) with optional metadata",
     {
       file: z.string().optional().describe("Base64-encoded file content (provide this OR file_url)"),
-      file_url: z.string().url().optional().describe("URL to fetch the receipt file from (alternative to base64 file). Supports PDF, PNG, JPG up to 10MB."),
+      file_url: z.url().optional().describe("URL to fetch the receipt file from (alternative to base64 file). Supports PDF, PNG, JPG up to 10MB."),
       type: receiptTypeSchema.describe("Receipt type"),
       file_name: z.string().optional().describe("File name (recommended for base64 uploads)"),
       account: z.number().int().optional().describe("Payment account ID"),

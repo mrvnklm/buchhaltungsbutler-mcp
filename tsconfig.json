@@ -11,7 +11,11 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
-    "sourceMap": true
+    "sourceMap": true,
+    // TypeScript no longer auto-discovers @types/* packages by default (since
+    // TS 6.0); without this, `process`/`Buffer`/etc. fail to resolve. If a
+    // future dependency needs its own ambient/global types, add it here too.
+    "types": ["node"]
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
