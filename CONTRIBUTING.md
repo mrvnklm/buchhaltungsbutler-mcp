@@ -41,7 +41,6 @@ instead of filing a public issue.
   validators).
 - `src/resources/` — MCP resources exposed for context injection.
 - `src/index.ts` — stdio entrypoint (local/desktop MCP clients).
-- `src/index-cloudflare.ts` — Cloudflare Worker entrypoint (Streamable HTTP).
 
 There's no formal RFC process — for anything larger than a small fix or new
 tool, opening an issue first to discuss the approach is appreciated but not

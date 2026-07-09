@@ -19,7 +19,6 @@ An MCP (Model Context Protocol) server that connects AI assistants like Claude t
 - **File upload from URL** in `upload_receipt` — accepts a URL, fetches server-side with content-type and size validation
 - **Rate limiting** — token-bucket throttling per BB API endpoint category (general, batch, upload); see [`src/api/rate-limiter.ts`](src/api/rate-limiter.ts) for exact burst/refill values
 - **E-invoicing** support (XRechnung/ZUGFeRD) with structured tax data
-- **Cloudflare Workers** deployment via Streamable HTTP transport
 - **Zod validation** on all tool inputs with descriptive error messages
 - **LLM-friendly output** formatting for structured, readable responses
 
@@ -34,14 +33,6 @@ You need BuchhaltungsButler API credentials:
 
 These are available in your BuchhaltungsButler account under Settings > API.
 
-### Install & Run
-
-```bash
-git clone https://github.com/mrvnklm/buchhaltungsbutler-mcp.git && cd buchhaltungsbutler-mcp
-npm install
-npm run build
-```
-
 ### Claude Desktop Configuration
 
 Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
@@ -50,8 +41,8 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 {
   "mcpServers": {
     "buchhaltungsbutler": {
-      "command": "node",
-      "args": ["/path/to/buchhaltungsbutler-mcp/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "buchhaltungsbutler-mcp"],
       "env": {
         "BB_API_CLIENT": "your-api-client",
         "BB_API_SECRET": "your-api-secret",
@@ -62,55 +53,11 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 }
 ```
 
-## Cloudflare Workers Deployment
+That's it — no clone or manual build. `npx` downloads and caches the [npm package](https://www.npmjs.com/package/buchhaltungsbutler-mcp) automatically the first time it runs, and picks up new versions on restart.
 
-The server can also run as a Cloudflare Worker using the Streamable HTTP transport for remote access. Credentials are passed per-request via client headers.
+### Running from source instead
 
-### Deploy
-
-```bash
-npm run build
-npm run deploy
-```
-
-### Claude Desktop Configuration (remote)
-
-Credentials are sent via headers on every request — no server-side secrets needed:
-
-```json
-{
-  "mcpServers": {
-    "buchhaltungsbutler": {
-      "url": "https://buchhaltungsbutler-mcp.<your-subdomain>.workers.dev/mcp",
-      "headers": {
-        "x-bb-api-client": "your-api-client",
-        "x-bb-api-secret": "your-api-secret",
-        "x-bb-api-key": "your-api-key"
-      }
-    }
-  }
-}
-```
-
-Optionally, you can also set credentials as Worker secrets (`npx wrangler secret put BB_API_CLIENT` etc.) as a fallback — client headers take priority.
-
-### Local Development
-
-Create a `.dev.vars` file with your credentials:
-
-```
-BB_API_CLIENT=your-api-client
-BB_API_SECRET=your-api-secret
-BB_API_KEY=your-api-key
-```
-
-Then run:
-
-```bash
-npm run start:cf
-```
-
-The MCP endpoint will be available at `http://localhost:8787/mcp`.
+If you want to modify the code, see [Contributing](#contributing) below.
 
 ## Tool Reference
 
@@ -181,7 +128,6 @@ The server maps 48 BuchhaltungsButler API endpoints down to 25 MCP tools by cons
 ```
 src/
   index.ts                 # Node.js stdio entry point
-  index-cloudflare.ts      # Cloudflare Workers entry point
   server.ts                # MCP server factory
   api/
     client.ts              # HTTP client with retry, caching, rate limiting
@@ -216,7 +162,6 @@ src/
 - **Consolidated tools**: Related CRUD operations (e.g., list/add/update/delete) are combined into single tools with an `action` parameter to reduce tool count
 - **Batch support**: Tools that support batch operations accept either single-item fields or an array, automatically routing to the correct API endpoint
 - **Rate limiting**: Token-bucket rate limiting per BB API endpoint category (general, batch, upload) — each bucket has its own burst capacity and refill rate; see `src/api/rate-limiter.ts` for exact values
-- **Stateless Workers**: The Cloudflare Workers deployment creates a fresh server+transport per request, which is correct for the stateless MCP Streamable HTTP mode
 
 ## Configuration
 

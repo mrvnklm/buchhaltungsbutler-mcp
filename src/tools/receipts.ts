@@ -64,9 +64,8 @@ function extractEmbeddedIPv4(hostname: string): [number, number, number, number]
  * normalization it's indistinguishable from an arbitrary compressed IPv6
  * address ending in the same two hextets, so treating it as an embedded IPv4
  * would risk false-positive blocking of legitimate IPv6 hosts. Verified this
- * is not a practical bypass: modern network stacks (Node, and by extension
- * this guard's Cloudflare Workers target) no longer auto-route this
- * deprecated form to the corresponding IPv4 address.
+ * is not a practical bypass: modern network stacks (including Node) no
+ * longer auto-route this deprecated form to the corresponding IPv4 address.
  */
 export function assertSafeReceiptUrl(url: URL): void {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -130,7 +129,7 @@ async function fetchFileFromUrl(url: string): Promise<{ base64: string; fileName
     }
 
     const bytes = new Uint8Array(buffer);
-    // Convert to base64 without Buffer (works in Node.js and Cloudflare Workers)
+    // Convert to base64 using the standard Web API (btoa) rather than Node's Buffer.
     let binary = "";
     for (let i = 0; i < bytes.length; i++) {
       binary += String.fromCharCode(bytes[i]);

@@ -17,8 +17,7 @@
     "buchhaltungsbutler",
     "accounting",
     "german",
-    "api",
-    "cloudflare-workers"
+    "api"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -37,10 +36,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
-    "start:cf": "wrangler dev",
-    "deploy": "wrangler deploy",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
@@ -49,7 +47,6 @@
   "devDependencies": {
     "@types/node": "^22.13.4",
     "typescript": "^5.7.3",
-    "vitest": "^4.0.18",
-    "wrangler": "^4.0.0"
+    "vitest": "^4.0.18"
   }
 }

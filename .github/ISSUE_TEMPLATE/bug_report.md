@@ -14,9 +14,8 @@ customer/accounting data in logs, screenshots, or request payloads below.
 A clear, concise description of what's wrong.
 
 **Environment**
-- Deployment: local (stdio) / Cloudflare Worker
 - Package version:
-- Node version (if local):
+- Node version:
 
 **Steps to reproduce**
 1.

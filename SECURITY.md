@@ -22,16 +22,13 @@ Include, if possible:
 
 - A description of the issue and its potential impact.
 - Steps to reproduce (a minimal repro is very helpful).
-- Whether it affects the local stdio server, the Cloudflare Worker (HTTP)
-  deployment, or both.
 
 ## Scope
 
 Areas of particular interest for this project:
 
-- Handling of `BB_API_CLIENT` / `BB_API_SECRET` / `BB_API_KEY` — via
-  environment variables (stdio server) or the `x-bb-api-*` request headers
-  accepted by the Cloudflare Worker (`src/index-cloudflare.ts`).
+- Handling of `BB_API_CLIENT` / `BB_API_SECRET` / `BB_API_KEY` environment
+  variables read by the stdio server.
 - Anything that could cause credentials or upstream API responses to be
   logged, cached, or reflected back to a different caller.
 - Input validation on tool arguments (Zod schemas) that could allow
