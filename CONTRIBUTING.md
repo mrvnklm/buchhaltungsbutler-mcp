@@ -45,3 +45,18 @@ instead of filing a public issue.
 There's no formal RFC process — for anything larger than a small fix or new
 tool, opening an issue first to discuss the approach is appreciated but not
 required.
+
+## Releasing (maintainer only)
+
+Publishing to npm is automated via [`.github/workflows/publish.yml`](.github/workflows/publish.yml),
+triggered by pushing a `v*.*.*` tag:
+
+```bash
+npm version patch   # or minor / major -- bumps package.json and creates a git tag
+git push --follow-tags
+```
+
+CI then builds, typechecks, tests, and runs `npm publish --provenance` using
+the `NPM_TOKEN` repository secret. The workflow verifies the pushed tag
+matches `package.json`'s version before publishing, so a manual `npm version`
+mismatch fails loudly instead of publishing the wrong thing.
