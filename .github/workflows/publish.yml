@@ -17,20 +17,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Node 24 (not the 22.x used by the CI test matrix) specifically for
+      # this job: npm's OIDC trusted-publishing needs npm >= 11.5.1, and
+      # self-upgrading npm in-place via `npm install -g npm@latest` on the
+      # Node 22.x GitHub Actions toolcache image hit a known broken-module-tree
+      # bug (missing `sigstore`, actions/runner-images#13883). Node 24's
+      # toolcache ships a recent-enough npm already, so no self-upgrade needed.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22.x
+          node-version: 24.x
           cache: "npm"
           registry-url: "https://registry.npmjs.org"
 
       - name: Install dependencies
         run: npm ci
-
-      # npm's OIDC trusted-publishing support needs npm >= 11.5.1; the npm
-      # bundled with actions/setup-node's Node 22.x can lag behind that.
-      - name: Update npm
-        run: npm install -g npm@latest
 
       - name: Typecheck
         run: npx tsc --noEmit
