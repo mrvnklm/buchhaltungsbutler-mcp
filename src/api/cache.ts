@@ -9,19 +9,23 @@ export class CacheManager {
     "/settings/get/creditors": 7_200_000,
   };
 
+  // Note: `/settings/get/postingaccounts` is a unified listing that also includes
+  // payment accounts, debtors, and creditors (see manage_posting_accounts' exclude_*
+  // flags in settings.ts), so writes to any of those must invalidate it too, not
+  // just the accounts/debtors/creditors' own list endpoints.
   static readonly INVALIDATION_MAP: Record<string, string[]> = {
-    "/accounts/add": ["/accounts/get"],
+    "/accounts/add": ["/accounts/get", "/settings/get/postingaccounts"],
     "/settings/add/postingaccount": ["/settings/get/postingaccounts"],
     "/settings/update/postingaccount": ["/settings/get/postingaccounts"],
     "/cost-locations/add": ["/cost-locations/get"],
     "/cost-locations/update": ["/cost-locations/get"],
     "/cost-locations/delete": ["/cost-locations/get"],
-    "/settings/add/debtor": ["/settings/get/debtors"],
-    "/settings/addBatch/debtors": ["/settings/get/debtors"],
-    "/settings/update/debtor": ["/settings/get/debtors"],
-    "/settings/add/creditor": ["/settings/get/creditors"],
-    "/settings/addBatch/creditors": ["/settings/get/creditors"],
-    "/settings/update/creditor": ["/settings/get/creditors"],
+    "/settings/add/debtor": ["/settings/get/debtors", "/settings/get/postingaccounts"],
+    "/settings/add-batch/debtors": ["/settings/get/debtors", "/settings/get/postingaccounts"],
+    "/settings/update/debtor": ["/settings/get/debtors", "/settings/get/postingaccounts"],
+    "/settings/add/creditor": ["/settings/get/creditors", "/settings/get/postingaccounts"],
+    "/settings/add-batch/creditors": ["/settings/get/creditors", "/settings/get/postingaccounts"],
+    "/settings/update/creditor": ["/settings/get/creditors", "/settings/get/postingaccounts"],
   };
 
   buildKey(path: string, params: Record<string, unknown>): string {

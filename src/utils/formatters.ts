@@ -9,7 +9,7 @@ export function formatList(
   title: string,
   items: unknown[],
   totalRows?: number,
-  options?: { maxItems?: number }
+  options?: { maxItems?: number; note?: string }
 ): string {
   if (items.length === 0) return `${title}: No results found.`;
 
@@ -27,6 +27,10 @@ export function formatList(
 
   if (truncated) {
     result += `\n\n... and ${items.length - maxItems} more items (${items.length} total, showing first ${maxItems})`;
+  }
+
+  if (options?.note) {
+    result += `\n\n${options.note}`;
   }
 
   return result;

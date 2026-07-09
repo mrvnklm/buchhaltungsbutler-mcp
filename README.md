@@ -1,7 +1,7 @@
 # BuchhaltungsButler MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-green)](https://nodejs.org/)
 
 An MCP (Model Context Protocol) server that connects AI assistants like Claude to the [BuchhaltungsButler](https://www.buchhaltungsbutler.de/) German accounting API. Manage receipts, transactions, invoices, postings, and more through natural language.
 
@@ -12,10 +12,10 @@ An MCP (Model Context Protocol) server that connects AI assistants like Claude t
 - **Batch operations** for receipts, transactions, postings, debtors, and creditors (up to 50 items)
 - **Retry with backoff** on transient errors (rate limit, timeout, network failure) with configurable attempts
 - **Caching layer** for static endpoints (accounts, posting accounts, cost locations) with TTL and write-triggered invalidation
-- **Auto-pagination** fetches all pages automatically via `auto_paginate` parameter on list tools
+- **Auto-pagination** fetches all pages automatically via `auto_paginate` parameter on `list_transactions`, `list_receipts`, and `list_postings`
 - **Response truncation** with configurable `max_results` to prevent token overflow on large result sets
 - **File upload from URL** in `upload_receipt` — accepts a URL, fetches server-side with content-type and size validation
-- **Rate limiting** with per-bucket throttling (general, batch, upload)
+- **Rate limiting** — token-bucket throttling per BB API endpoint category (general, batch, upload); see [`src/api/rate-limiter.ts`](src/api/rate-limiter.ts) for exact burst/refill values
 - **E-invoicing** support (XRechnung/ZUGFeRD) with structured tax data
 - **Cloudflare Workers** deployment via Streamable HTTP transport
 - **Zod validation** on all tool inputs with descriptive error messages
@@ -35,6 +35,7 @@ These are available in your BuchhaltungsButler account under Settings > API.
 ### Install & Run
 
 ```bash
+git clone https://github.com/mrvnklm/buchhaltungsbutler-mcp.git && cd buchhaltungsbutler-mcp
 npm install
 npm run build
 ```
@@ -212,7 +213,7 @@ src/
 - **POST-only API**: BuchhaltungsButler uses POST for all endpoints with `x-www-form-urlencoded` bodies and Basic Auth
 - **Consolidated tools**: Related CRUD operations (e.g., list/add/update/delete) are combined into single tools with an `action` parameter to reduce tool count
 - **Batch support**: Tools that support batch operations accept either single-item fields or an array, automatically routing to the correct API endpoint
-- **Rate limiting**: Three buckets (general: 2/sec, batch: 1/2sec, upload: 1/5sec) matching BB API limits
+- **Rate limiting**: Token-bucket rate limiting per BB API endpoint category (general, batch, upload) — each bucket has its own burst capacity and refill rate; see `src/api/rate-limiter.ts` for exact values
 - **Stateless Workers**: The Cloudflare Workers deployment creates a fresh server+transport per request, which is correct for the stateless MCP Streamable HTTP mode
 
 ## Configuration
@@ -250,6 +251,18 @@ Resources are read-only and benefit from the caching layer automatically.
 - **Response streaming**: Stream large result sets for better LLM context handling
 - **Webhook support**: Listen for BB webhook events (payment received, receipt processed)
 - **OAuth/token-based auth**: Support for user-level auth flows beyond Basic Auth
+
+## Contributing
+
+```bash
+git clone https://github.com/mrvnklm/buchhaltungsbutler-mcp.git && cd buchhaltungsbutler-mcp
+npm install
+npm test           # vitest run
+npx tsc --noEmit   # typecheck
+npm run build
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide, including project structure and how to report bugs vs. security issues.
 
 ## License
 

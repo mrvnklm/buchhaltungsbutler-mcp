@@ -18,6 +18,13 @@ const BUCKET_CONFIGS: Record<RateLimitBucket, BucketConfig> = {
 
 export class RateLimiter {
   private buckets = new Map<RateLimitBucket, BucketState>();
+  // Serializes acquire() calls per bucket: without this, two concurrent
+  // acquire() calls that both observe tokens < 1 before either awaits would
+  // compute the same waitMs and both resolve after a single wait, letting
+  // the second caller ride free instead of waiting its own additional
+  // interval. Chaining onto the previous call's promise ensures only one
+  // acquire's token math/wait runs at a time per bucket.
+  private queues = new Map<RateLimitBucket, Promise<void>>();
 
   constructor() {
     for (const [key, config] of Object.entries(BUCKET_CONFIGS)) {
@@ -25,10 +32,20 @@ export class RateLimiter {
         tokens: config.maxTokens,
         lastRefill: Date.now(),
       });
+      this.queues.set(key as RateLimitBucket, Promise.resolve());
     }
   }
 
-  async acquire(bucket: RateLimitBucket): Promise<void> {
+  acquire(bucket: RateLimitBucket): Promise<void> {
+    const next = this.queues.get(bucket)!.then(() => this.acquireExclusive(bucket));
+    // Swallow here so a rejection doesn't poison the chain for later callers;
+    // acquireExclusive never actually throws today, but this keeps the queue
+    // resilient if that ever changes.
+    this.queues.set(bucket, next.catch(() => {}));
+    return next;
+  }
+
+  private async acquireExclusive(bucket: RateLimitBucket): Promise<void> {
     const config = BUCKET_CONFIGS[bucket];
     const state = this.buckets.get(bucket)!;
 

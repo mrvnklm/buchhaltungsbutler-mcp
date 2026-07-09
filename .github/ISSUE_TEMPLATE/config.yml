@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/mrvnklm/buchhaltungsbutler-mcp/security/advisories/new
+    about: Please report suspected security issues (especially anything involving API credentials) privately instead of opening a public issue. See SECURITY.md.

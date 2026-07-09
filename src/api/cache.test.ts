@@ -126,10 +126,21 @@ describe("CacheManager", () => {
       expect(cache.get("/settings/get/debtors")).toBeUndefined();
     });
 
-    it("invalidates debtors cache on batch debtor add", () => {
+    it("invalidates debtors cache on batch debtor add, using the real kebab-case endpoint path", () => {
+      // Regression test: INVALIDATION_MAP previously had this keyed as
+      // "/settings/addBatch/debtors" (camelCase), which never matched the real
+      // request path "/settings/add-batch/debtors" actually sent by settings.ts
+      // (and confirmed against the live API spec) -- so this invalidation never
+      // fired in practice.
       cache.set("/settings/get/debtors", "data", 60_000);
-      cache.invalidateForWrite("/settings/addBatch/debtors");
+      cache.invalidateForWrite("/settings/add-batch/debtors");
       expect(cache.get("/settings/get/debtors")).toBeUndefined();
+    });
+
+    it("invalidates creditors cache on batch creditor add, using the real kebab-case endpoint path", () => {
+      cache.set("/settings/get/creditors", "data", 60_000);
+      cache.invalidateForWrite("/settings/add-batch/creditors");
+      expect(cache.get("/settings/get/creditors")).toBeUndefined();
     });
 
     it("invalidates creditors cache on creditor update", () => {
@@ -148,6 +159,25 @@ describe("CacheManager", () => {
       cache.set("/accounts/get", "data", 60_000);
       cache.invalidateForWrite("/transactions/add");
       expect(cache.get("/accounts/get")).toBe("data");
+    });
+
+    it("also invalidates the combined postingaccounts listing, since it includes accounts/debtors/creditors", () => {
+      // /settings/get/postingaccounts is a unified listing (see manage_posting_accounts'
+      // exclude_accounts/exclude_debtors/exclude_creditors flags), so writes to
+      // accounts, debtors, or creditors must invalidate it too, not just their own
+      // dedicated list endpoints -- otherwise a newly added debtor stays invisible
+      // there for up to the 24h TTL.
+      cache.set("/settings/get/postingaccounts", "data", 60_000);
+      cache.invalidateForWrite("/accounts/add");
+      expect(cache.get("/settings/get/postingaccounts")).toBeUndefined();
+
+      cache.set("/settings/get/postingaccounts", "data", 60_000);
+      cache.invalidateForWrite("/settings/add/debtor");
+      expect(cache.get("/settings/get/postingaccounts")).toBeUndefined();
+
+      cache.set("/settings/get/postingaccounts", "data", 60_000);
+      cache.invalidateForWrite("/settings/add-batch/creditors");
+      expect(cache.get("/settings/get/postingaccounts")).toBeUndefined();
     });
   });
 });

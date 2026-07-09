@@ -5,8 +5,43 @@ import { ApiError } from "../api/errors.js";
 import type { ApiResponse, BatchResponse } from "../types/common.js";
 import type { PostingItem } from "../types/api-responses.js";
 import { formatList, formatSuccess, formatBatchResult } from "../utils/formatters.js";
-import { fetchAllPages } from "../utils/pagination.js";
+import { fetchAllPages, paginationCapNote } from "../utils/pagination.js";
 import { dateSchema, vatCodeSchema } from "../utils/validators.js";
+
+/**
+ * Extract a scalar field value from an error's `request_data` (shape is not
+ * guaranteed by BatchResponse, so this is defensive) for matching an error
+ * back to the request item it came from.
+ */
+function extractRequestDataId(requestData: unknown, key: string): string | undefined {
+  if (requestData && typeof requestData === "object" && key in (requestData as Record<string, unknown>)) {
+    const value = (requestData as Record<string, unknown>)[key];
+    return value === undefined || value === null ? undefined : String(value);
+  }
+  return undefined;
+}
+
+/**
+ * BatchResponse gives no guarantee that `errors` corresponds to a trailing
+ * suffix of the request array (or any positional ordering at all) -- each
+ * error only carries the offending `request_data`. To correctly attribute
+ * success/failure per item, match each error back to its originating
+ * request item via a unique id field instead of assuming array position.
+ */
+function splitBatchByRequestData<T>(
+  items: T[],
+  errors: BatchResponse["errors"],
+  idKey: keyof T
+): { successes: T[]; failedIds: Set<string> } {
+  const errorList = errors ?? [];
+  const failedIds = new Set<string>();
+  for (const err of errorList) {
+    const id = extractRequestDataId(err.request_data, idKey as string);
+    if (id !== undefined) failedIds.add(id);
+  }
+  const successes = items.filter((item) => !failedIds.has(String(item[idKey])));
+  return { successes, failedIds };
+}
 
 export function registerPostingsTools(server: McpServer, client: BbClient): void {
   server.tool(
@@ -45,11 +80,13 @@ export function registerPostingsTools(server: McpServer, client: BbClient): void
 
         let data: PostingItem[];
         let totalRows: number | undefined;
+        let paginationNote: string | undefined;
 
         if (params.auto_paginate) {
           const result = await fetchAllPages<PostingItem>(client, "/postings/get", requestParams, { pageSize: 1000 });
           data = result.data;
           totalRows = result.totalRows;
+          if (result.hasMore) paginationNote = paginationCapNote(result.pagesLoaded);
         } else {
           const res = await client.request<ApiResponse<PostingItem[]>>("/postings/get", requestParams);
           data = res.data ?? [];
@@ -60,7 +97,7 @@ export function registerPostingsTools(server: McpServer, client: BbClient): void
           content: [{
             type: "text" as const,
             text: formatList("Postings", data, totalRows,
-              params.max_results ? { maxItems: params.max_results } : undefined),
+              { maxItems: params.max_results, note: paginationNote }),
           }],
         };
       } catch (error) {
@@ -127,7 +164,7 @@ VAT codes: 0_none, 19_vat, 7_vat, 19_pre, 7_pre, 19_both_1, 19_both_2, 7_both, 1
         debtor: z.number().int().optional(),
         cost_locations: z.array(z.string()).optional(),
         cost_locations_two: z.array(z.string()).optional(),
-      })).optional().describe("Array of receipt postings for batch creation"),
+      })).max(50).optional().describe("Array of receipt postings for batch creation (max 50)"),
 
       transactions: z.array(z.object({
         transaction_id_by_customer: z.number().int(),
@@ -138,7 +175,7 @@ VAT codes: 0_none, 19_vat, 7_vat, 19_pre, 7_pre, 19_both_1, 19_both_2, 7_both, 1
         cost_locations: z.array(z.string()).optional(),
         cost_locations_two: z.array(z.string()).optional(),
         oi_receipts_ids_by_customer: z.array(z.number().int()).optional(),
-      })).optional().describe("Array of transaction postings for batch creation"),
+      })).max(50).optional().describe("Array of transaction postings for batch creation (max 50)"),
 
       free_postings: z.array(z.object({
         date: dateSchema,
@@ -149,7 +186,7 @@ VAT codes: 0_none, 19_vat, 7_vat, 19_pre, 7_pre, 19_both_1, 19_both_2, 7_both, 1
         vat: vatCodeSchema,
         cost_location: z.string().optional(),
         cost_location_two: z.string().optional(),
-      })).optional().describe("Array of free postings for batch creation"),
+      })).max(50).optional().describe("Array of free postings for batch creation (max 50)"),
     },
     async (params) => {
       try {
@@ -161,13 +198,15 @@ VAT codes: 0_none, 19_vat, 7_vat, 19_pre, 7_pre, 19_both_1, 19_both_2, 7_both, 1
                 { receipts: params.receipts },
                 "batch"
               );
-              const successes = Array.isArray(res.errors)
-                ? params.receipts.slice(0, params.receipts.length - res.errors.length).map((r) => ({ id_by_customer: r.receipt_id_by_customer }))
-                : params.receipts.map((r) => ({ id_by_customer: r.receipt_id_by_customer }));
+              const { successes } = splitBatchByRequestData(params.receipts, res.errors, "receipt_id_by_customer");
               return {
                 content: [{
                   type: "text" as const,
-                  text: formatBatchResult("Receipt postings batch", successes, res.errors ?? []),
+                  text: formatBatchResult(
+                    "Receipt postings batch",
+                    successes.map((r) => ({ id_by_customer: r.receipt_id_by_customer })),
+                    res.errors ?? []
+                  ),
                 }],
               };
             }
@@ -209,13 +248,15 @@ VAT codes: 0_none, 19_vat, 7_vat, 19_pre, 7_pre, 19_both_1, 19_both_2, 7_both, 1
                 { transactions: params.transactions },
                 "batch"
               );
-              const successes = Array.isArray(res.errors)
-                ? params.transactions.slice(0, params.transactions.length - res.errors.length).map((t) => ({ id_by_customer: t.transaction_id_by_customer }))
-                : params.transactions.map((t) => ({ id_by_customer: t.transaction_id_by_customer }));
+              const { successes } = splitBatchByRequestData(params.transactions, res.errors, "transaction_id_by_customer");
               return {
                 content: [{
                   type: "text" as const,
-                  text: formatBatchResult("Transaction postings batch", successes, res.errors ?? []),
+                  text: formatBatchResult(
+                    "Transaction postings batch",
+                    successes.map((t) => ({ id_by_customer: t.transaction_id_by_customer })),
+                    res.errors ?? []
+                  ),
                 }],
               };
             }
@@ -256,13 +297,15 @@ VAT codes: 0_none, 19_vat, 7_vat, 19_pre, 7_pre, 19_both_1, 19_both_2, 7_both, 1
                 { free_postings: params.free_postings },
                 "batch"
               );
-              const successes = Array.isArray(res.errors)
-                ? params.free_postings.slice(0, params.free_postings.length - res.errors.length).map((f) => ({ id_by_customer: f.postingtext }))
-                : params.free_postings.map((f) => ({ id_by_customer: f.postingtext }));
+              const { successes } = splitBatchByRequestData(params.free_postings, res.errors, "postingtext");
               return {
                 content: [{
                   type: "text" as const,
-                  text: formatBatchResult("Free postings batch", successes, res.errors ?? []),
+                  text: formatBatchResult(
+                    "Free postings batch",
+                    successes.map((f) => ({ id_by_customer: f.postingtext })),
+                    res.errors ?? []
+                  ),
                 }],
               };
             }

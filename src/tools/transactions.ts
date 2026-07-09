@@ -10,7 +10,7 @@ import type {
   AssignedTransactionItem,
 } from "../types/api-responses.js";
 import { formatList, formatSingle, formatSuccess, formatBatchResult } from "../utils/formatters.js";
-import { fetchAllPages } from "../utils/pagination.js";
+import { fetchAllPages, paginationCapNote } from "../utils/pagination.js";
 import { dateSchema, dateTimeSchema, currencySchema } from "../utils/validators.js";
 
 export function registerTransactionsTools(server: McpServer, client: BbClient): void {
@@ -43,11 +43,13 @@ export function registerTransactionsTools(server: McpServer, client: BbClient): 
 
         let data: TransactionListItem[];
         let totalRows: number | undefined;
+        let paginationNote: string | undefined;
 
         if (params.auto_paginate) {
           const result = await fetchAllPages<TransactionListItem>(client, "/transactions/get", requestParams, { pageSize: 500 });
           data = result.data;
           totalRows = result.totalRows;
+          if (result.hasMore) paginationNote = paginationCapNote(result.pagesLoaded);
         } else {
           const res = await client.request<ApiResponse<TransactionListItem[]>>("/transactions/get", requestParams);
           data = res.data ?? [];
@@ -58,7 +60,7 @@ export function registerTransactionsTools(server: McpServer, client: BbClient): 
           content: [{
             type: "text" as const,
             text: formatList("Transactions", data, totalRows,
-              params.max_results ? { maxItems: params.max_results } : undefined),
+              { maxItems: params.max_results, note: paginationNote }),
           }],
         };
       } catch (error) {
@@ -148,9 +150,12 @@ export function registerTransactionsTools(server: McpServer, client: BbClient): 
             { transactions: params.transactions },
             "batch"
           );
-          const transactions = ((res as Record<string, unknown>).transactions ?? []) as Record<string, unknown>[];
-          const successes = transactions.filter((t) => t.success === true);
-          const errors = transactions.filter((t) => t.success === false);
+          // Per the API's Swagger schema, `transactions` only ever contains successful
+          // items (success is fixed `true`); failures live in the separate `errors`
+          // array, not mixed into `transactions` -- filtering `transactions` for
+          // success===false always yields [] and silently drops real errors.
+          const successes = ((res as Record<string, unknown>).transactions ?? []) as Record<string, unknown>[];
+          const errors = res.errors ?? [];
           return {
             content: [{
               type: "text" as const,
@@ -217,7 +222,7 @@ export function registerTransactionsTools(server: McpServer, client: BbClient): 
       transactions_to_receipts: z.array(z.object({
         transaction_id_by_customer: z.string().describe("Transaction ID"),
         receipt_id_by_customer: z.string().describe("Receipt ID"),
-      })).optional().describe("Array of transaction-receipt pairs (required for assign_batch)"),
+      })).max(50).optional().describe("Array of transaction-receipt pairs (required for assign_batch, max 50)"),
     },
     async (params) => {
       try {
@@ -228,16 +233,22 @@ export function registerTransactionsTools(server: McpServer, client: BbClient): 
               isError: true,
             };
           }
-          const res = await client.request<ApiResponse>(
+          const res = await client.request<BatchResponse>(
             "/transactions/assign-batch/receipt",
-            { transactions_to_receipts: params.transactions_to_receipts }
+            { transactions_to_receipts: params.transactions_to_receipts },
+            "batch"
           );
+          // Per the API's Swagger schema, `transactions_to_receipts` only ever
+          // contains successful items; failures live in the separate `errors`
+          // array. The previous version ignored the response entirely and always
+          // reported "Batch assignment completed" for the full requested count,
+          // even when some/all pairs actually failed.
+          const successes = ((res as Record<string, unknown>).transactions_to_receipts ?? []) as Record<string, unknown>[];
+          const errors = res.errors ?? [];
           return {
             content: [{
               type: "text" as const,
-              text: formatSuccess(res.message ?? "Batch assignment completed", {
-                pairs: params.transactions_to_receipts.length,
-              }),
+              text: formatBatchResult("Batch receipt-to-transaction assignment", successes, errors),
             }],
           };
         }

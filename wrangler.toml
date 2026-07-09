@@ -1,4 +1,4 @@
 name = "buchhaltungsbutler-mcp"
 main = "dist/index-cloudflare.js"
-compatibility_date = "2025-02-10"
+compatibility_date = "2026-07-01"
 compatibility_flags = ["nodejs_compat"]

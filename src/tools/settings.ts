@@ -42,7 +42,7 @@ export function registerSettingsTools(server: McpServer, client: BbClient): void
         email: z.string().optional(),
         iban: z.string().optional(),
         bic: z.string().optional(),
-      })).optional().describe("Array of debtors (add_batch only)"),
+      })).max(50).optional().describe("Array of debtors (add_batch only, max 50)"),
     },
     async (params) => {
       try {
@@ -177,7 +177,7 @@ export function registerSettingsTools(server: McpServer, client: BbClient): void
         iban: z.string().optional(),
         bic: z.string().optional(),
         due_in_days: z.number().int().optional(),
-      })).optional().describe("Array of creditors (add_batch only)"),
+      })).max(50).optional().describe("Array of creditors (add_batch only, max 50)"),
     },
     async (params) => {
       try {
@@ -394,7 +394,7 @@ export function registerSettingsTools(server: McpServer, client: BbClient): void
 
 // ── Helpers ─────────────────────────────────────────────────────
 
-function buildDebtorParams(params: Record<string, unknown>): Record<string, unknown> {
+export function buildDebtorParams(params: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   const fields = [
     "name", "contact_person_name", "street", "additional_address_line",
@@ -407,7 +407,7 @@ function buildDebtorParams(params: Record<string, unknown>): Record<string, unkn
   return result;
 }
 
-function buildCreditorParams(params: Record<string, unknown>): Record<string, unknown> {
+export function buildCreditorParams(params: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   const fields = [
     "name", "contact_person_name", "street", "additional_address_line",

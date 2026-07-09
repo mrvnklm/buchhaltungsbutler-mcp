@@ -138,6 +138,46 @@ describe("fetchAllPages", () => {
     expect(calls[0][1]).toEqual({ offset: 4, limit: 10 });
   });
 
+  it("reports hasMore=true when maxPages is hit and totalRows was never known", async () => {
+    // Regression test: if the API omits the optional `rows` field, the old
+    // implementation unconditionally returned hasMore=false even when the
+    // page cap was hit with a still-full last page -- silently claiming
+    // completeness when it genuinely didn't know.
+    const client = createMockClient([
+      { data: [{ id: 1 }, { id: 2 }] }, // no `rows` field
+      { data: [{ id: 3 }, { id: 4 }] }, // full page again, no `rows` field
+    ]);
+
+    const result = await fetchAllPages(
+      client as any,
+      "/test",
+      {},
+      { pageSize: 2, maxPages: 2 }
+    );
+
+    expect(result.pagesLoaded).toBe(2);
+    expect(result.totalRows).toBeUndefined();
+    expect(result.hasMore).toBe(true);
+  });
+
+  it("reports hasMore=false when the last page is short, even without totalRows", async () => {
+    const client = createMockClient([
+      { data: [{ id: 1 }, { id: 2 }] }, // no `rows` field
+      { data: [{ id: 3 }] }, // short page → genuinely done
+    ]);
+
+    const result = await fetchAllPages(
+      client as any,
+      "/test",
+      {},
+      { pageSize: 2, maxPages: 5 }
+    );
+
+    expect(result.pagesLoaded).toBe(2);
+    expect(result.totalRows).toBeUndefined();
+    expect(result.hasMore).toBe(false);
+  });
+
   it("handles empty first page", async () => {
     const client = createMockClient([{ data: [], rows: 0 }]);
 

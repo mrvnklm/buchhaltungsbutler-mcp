@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { assertSafeReceiptUrl } from "./receipts.js";
 
 // We test the fetchFileFromUrl function indirectly by testing the module-level helper.
 // Since it's not exported, we test via the upload_receipt tool behavior by examining
@@ -117,5 +118,71 @@ describe("upload_receipt file_url validation", () => {
     const response = await fetch("https://example.com/missing.pdf");
     expect(response.ok).toBe(false);
     expect(response.status).toBe(404);
+  });
+});
+
+describe("upload_receipt SSRF protection (assertSafeReceiptUrl)", () => {
+  it("allows public http(s) URLs", () => {
+    expect(() => assertSafeReceiptUrl(new URL("https://example.com/invoice.pdf"))).not.toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://example.com/invoice.pdf"))).not.toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("https://8.8.8.8/invoice.pdf"))).not.toThrow();
+  });
+
+  it("rejects non-http(s) schemes", () => {
+    expect(() => assertSafeReceiptUrl(new URL("file:///etc/passwd"))).toThrow(/scheme/i);
+    expect(() => assertSafeReceiptUrl(new URL("ftp://example.com/f.pdf"))).toThrow(/scheme/i);
+    expect(() => assertSafeReceiptUrl(new URL("gopher://example.com/f.pdf"))).toThrow(/scheme/i);
+  });
+
+  it("rejects localhost and *.localhost", () => {
+    expect(() => assertSafeReceiptUrl(new URL("http://localhost/f.pdf"))).toThrow(/localhost/i);
+    expect(() => assertSafeReceiptUrl(new URL("http://foo.localhost/f.pdf"))).toThrow(/localhost/i);
+  });
+
+  it("rejects loopback IPv4 (127.0.0.0/8)", () => {
+    expect(() => assertSafeReceiptUrl(new URL("http://127.0.0.1/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://127.255.255.255/f.pdf"))).toThrow();
+  });
+
+  it("rejects RFC1918 private ranges", () => {
+    expect(() => assertSafeReceiptUrl(new URL("http://10.0.0.5/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://172.16.0.1/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://172.31.255.255/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://192.168.1.1/f.pdf"))).toThrow();
+    // Adjacent-but-public ranges must NOT be blocked
+    expect(() => assertSafeReceiptUrl(new URL("http://172.15.0.1/f.pdf"))).not.toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://172.32.0.1/f.pdf"))).not.toThrow();
+  });
+
+  it("rejects link-local and cloud metadata address (169.254.0.0/16)", () => {
+    expect(() => assertSafeReceiptUrl(new URL("http://169.254.169.254/latest/meta-data/"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://169.254.0.1/f.pdf"))).toThrow();
+  });
+
+  it("rejects IPv6 loopback, link-local, and unique-local addresses", () => {
+    expect(() => assertSafeReceiptUrl(new URL("http://[::1]/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://[fe80::1]/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://[fc00::1]/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://[fd12:3456::1]/f.pdf"))).toThrow();
+  });
+
+  it("rejects IPv4-mapped IPv6 addresses pointing at private/internal ranges", () => {
+    // URL parsing normalizes bracketed IPv4-mapped IPv6 literals into hex form
+    // (e.g. [::ffff:127.0.0.1] -> hostname "::ffff:7f00:1"), which bypassed a
+    // dotted-quad-only check. Cover both the dotted and normalized hex forms.
+    expect(() => assertSafeReceiptUrl(new URL("http://[::ffff:127.0.0.1]/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://[::ffff:169.254.169.254]/latest/meta-data/"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://[::ffff:10.0.0.1]/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://[::ffff:192.168.1.1]/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://[::ffff:7f00:1]/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://[::ffff:a9fe:a9fe]/f.pdf"))).toThrow();
+    // Public IPv4-mapped addresses must NOT be blocked
+    expect(() => assertSafeReceiptUrl(new URL("http://[::ffff:8.8.8.8]/f.pdf"))).not.toThrow();
+  });
+
+  it("rejects NAT64-mapped private/internal IPv4 addresses", () => {
+    expect(() => assertSafeReceiptUrl(new URL("http://[64:ff9b::169.254.169.254]/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://[64:ff9b::127.0.0.1]/f.pdf"))).toThrow();
+    expect(() => assertSafeReceiptUrl(new URL("http://[64:ff9b::8.8.8.8]/f.pdf"))).not.toThrow();
   });
 });

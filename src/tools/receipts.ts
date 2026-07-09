@@ -5,7 +5,7 @@ import { ApiError } from "../api/errors.js";
 import type { ApiResponse, BatchResponse } from "../types/common.js";
 import type { ReceiptListItem, ReceiptDetail } from "../types/api-responses.js";
 import { formatList, formatSingle, formatSuccess, formatBatchResult } from "../utils/formatters.js";
-import { fetchAllPages } from "../utils/pagination.js";
+import { fetchAllPages, paginationCapNote } from "../utils/pagination.js";
 import { dateSchema, receiptTypeSchema, listDirectionSchema, currencySchema } from "../utils/validators.js";
 
 const ALLOWED_CONTENT_TYPES = new Set([
@@ -17,12 +17,98 @@ const ALLOWED_CONTENT_TYPES = new Set([
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
+function isPrivateIPv4(a: number, b: number): boolean {
+  return (
+    a === 127 || // loopback
+    a === 10 || // RFC1918
+    (a === 172 && b >= 16 && b <= 31) || // RFC1918
+    (a === 192 && b === 168) || // RFC1918
+    (a === 169 && b === 254) || // link-local incl. cloud metadata
+    a === 0 // "this network"
+  );
+}
+
+// Extracts an embedded IPv4 address from IPv4-mapped (::ffff:a.b.c.d / ::ffff:7f00:1)
+// or NAT64 (64:ff9b::a.b.c.d) IPv6 literals. URL parsing normalizes bracketed IPv6
+// hosts into these forms, and without this the dotted-quad-only check below is
+// bypassable (e.g. http://[::ffff:169.254.169.254]/ reaches the cloud metadata IP).
+function extractEmbeddedIPv4(hostname: string): [number, number, number, number] | null {
+  // WHATWG URL parsing normalizes IPv4-mapped/NAT64 IPv6 literals into exactly
+  // these compressed prefixes (verified: "::ffff:8.8.8.8" -> "::ffff:808:808",
+  // "64:ff9b::8.8.8.8" -> "64:ff9b::808:808"), so anchoring at the start is safe.
+  const dottedMatch = hostname.match(/^(?:::ffff:|64:ff9b::)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/i);
+  if (dottedMatch) {
+    const [a, b, c, d] = dottedMatch.slice(1).map(Number);
+    return [a, b, c, d];
+  }
+
+  const hexMatch = hostname.match(/^(?:::ffff:|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+  if (hexMatch) {
+    const hi = parseInt(hexMatch[1], 16);
+    const lo = parseInt(hexMatch[2], 16);
+    return [(hi >> 8) & 0xff, hi & 0xff, (lo >> 8) & 0xff, lo & 0xff];
+  }
+
+  return null;
+}
+
+/**
+ * Best-effort SSRF guard for user-supplied file URLs: only allow http(s) to
+ * a public hostname/IP, blocking loopback, link-local (incl. cloud metadata
+ * endpoints like 169.254.169.254), RFC1918 private ranges, and their
+ * IPv4-mapped/NAT64 IPv6 equivalents (e.g. ::ffff:169.254.169.254).
+ * This does not protect against DNS-rebinding (the check is on the literal
+ * host, not the resolved IP), but blocks the common direct-IP/localhost cases.
+ * Known residual gap: the deprecated bare IPv4-compatible IPv6 form
+ * (::a.b.c.d, no ffff/NAT64 prefix) is not specially detected — after URL
+ * normalization it's indistinguishable from an arbitrary compressed IPv6
+ * address ending in the same two hextets, so treating it as an embedded IPv4
+ * would risk false-positive blocking of legitimate IPv6 hosts. Verified this
+ * is not a practical bypass: modern network stacks (Node, and by extension
+ * this guard's Cloudflare Workers target) no longer auto-route this
+ * deprecated form to the corresponding IPv4 address.
+ */
+export function assertSafeReceiptUrl(url: URL): void {
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`Unsupported URL scheme: ${url.protocol}`);
+  }
+
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+    throw new Error("URLs pointing to localhost are not allowed");
+  }
+
+  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const [a, b] = ipv4Match.slice(1).map(Number);
+    if (isPrivateIPv4(a, b)) {
+      throw new Error("URLs pointing to private/internal IP addresses are not allowed");
+    }
+  }
+
+  if (hostname === "::1" || hostname.startsWith("fe80:") || hostname.startsWith("fc") || hostname.startsWith("fd")) {
+    throw new Error("URLs pointing to private/internal IP addresses are not allowed");
+  }
+
+  const embeddedIPv4 = extractEmbeddedIPv4(hostname);
+  if (embeddedIPv4) {
+    const [a, b] = embeddedIPv4;
+    if (isPrivateIPv4(a, b)) {
+      throw new Error("URLs pointing to private/internal IP addresses are not allowed");
+    }
+  }
+}
+
 async function fetchFileFromUrl(url: string): Promise<{ base64: string; fileName: string }> {
+  const parsedUrl = new URL(url);
+  assertSafeReceiptUrl(parsedUrl);
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
 
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { signal: controller.signal, redirect: "error" });
 
     if (!response.ok) {
       throw new Error(`Failed to fetch file: HTTP ${response.status}`);
@@ -100,11 +186,13 @@ export function registerReceiptsTools(server: McpServer, client: BbClient): void
 
         let data: ReceiptListItem[];
         let totalRows: number | undefined;
+        let paginationNote: string | undefined;
 
         if (params.auto_paginate) {
           const result = await fetchAllPages<ReceiptListItem>(client, "/receipts/get", requestParams, { pageSize: 500 });
           data = result.data;
           totalRows = result.totalRows;
+          if (result.hasMore) paginationNote = paginationCapNote(result.pagesLoaded);
         } else {
           const res = await client.request<ApiResponse<ReceiptListItem[]>>("/receipts/get", requestParams);
           data = res.data ?? [];
@@ -115,7 +203,7 @@ export function registerReceiptsTools(server: McpServer, client: BbClient): void
           content: [{
             type: "text" as const,
             text: formatList("Receipts", data, totalRows,
-              params.max_results ? { maxItems: params.max_results } : undefined),
+              { maxItems: params.max_results, note: paginationNote }),
           }],
         };
       } catch (error) {
@@ -210,9 +298,12 @@ export function registerReceiptsTools(server: McpServer, client: BbClient): void
             { receipts: params.receipts },
             "batch"
           );
-          const receipts = ((res as Record<string, unknown>).receipts ?? []) as Record<string, unknown>[];
-          const successes = receipts.filter((r) => r.success === true);
-          const errors = receipts.filter((r) => r.success === false);
+          // Per the API's Swagger schema, `receipts` only ever contains successful
+          // items (success is fixed `true`); failures live in the separate `errors`
+          // array, not mixed into `receipts` -- filtering `receipts` for
+          // success===false always yields [] and silently drops real errors.
+          const successes = ((res as Record<string, unknown>).receipts ?? []) as Record<string, unknown>[];
+          const errors = res.errors ?? [];
           return {
             content: [{
               type: "text" as const,
@@ -283,7 +374,11 @@ export function registerReceiptsTools(server: McpServer, client: BbClient): void
       invoice_number: z.string().optional().describe("Invoice number"),
       date: dateSchema.optional().describe("Receipt date (YYYY-MM-DD)"),
       amount: z.number().optional().describe("Amount"),
-      currency: currencySchema.optional().describe("Currency code"),
+      // The BB API docs for /receipts/upload state currency "has to be 'EUR' if
+      // specified" -- unlike create_receipt/create_transaction, this endpoint does
+      // not accept foreign currencies, so we enforce that locally instead of
+      // letting an otherwise-valid-looking currency fail server-side.
+      currency: z.literal("EUR").optional().describe("Currency code -- must be 'EUR' if specified (this endpoint does not support foreign currencies)"),
       vat_rate: z.number().optional().describe("VAT rate percentage"),
       payment_reference: z.string().optional().describe("Payment reference"),
       date_delivery: dateSchema.optional().describe("Delivery date (YYYY-MM-DD)"),

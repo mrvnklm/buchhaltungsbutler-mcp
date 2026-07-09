@@ -46,7 +46,7 @@ const baseInvoiceShape = {
   customer_number: z.string().optional().describe("Customer number"),
 } as const;
 
-function buildInvoiceParams(params: Record<string, unknown>): Record<string, unknown> {
+export function buildInvoiceParams(params: Record<string, unknown>): Record<string, unknown> {
   const requestParams: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined) {
@@ -95,28 +95,44 @@ export function registerInvoicesTools(server: McpServer, client: BbClient): void
     }
   );
 
-  server.tool(
+  const eInvoiceShape = {
+    ...baseInvoiceShape,
+    // Override address fields to required for e-invoice
+    street: z.string().describe("Street address (required for e-invoice)"),
+    zip: z.string().describe("ZIP/postal code (required for e-invoice)"),
+    city: z.string().describe("City (required for e-invoice)"),
+    country: z.string().describe("Country (required for e-invoice)"),
+    email: z.string().describe("Email address (required for e-invoice)"),
+
+    // E-invoice specific fields
+    e_invoice_id: z.string().describe("Buyer reference / Leitweg-ID (use '0' as default)"),
+    item_tax_type: z.array(eInvoiceTaxTypeSchema).describe("Tax type per line item: S, Z, AE, K, G, or E"),
+    item_tax_amount: z.array(z.string()).optional().describe("Tax amount per line item (required when tax_type is 'S')"),
+
+    invoicenumber: z.string().optional().describe("Custom invoice number (auto-generated if omitted)"),
+    payment_reference: z.string().optional().describe("Payment reference"),
+  } as const;
+
+  const eInvoiceInputSchema = z.object(eInvoiceShape).superRefine((data, ctx) => {
+    data.item_tax_type.forEach((taxType, index) => {
+      if (taxType === "S" && data.item_tax_amount?.[index] === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `item_tax_amount is required at the same index where item_tax_type is "S"`,
+          path: ["item_tax_amount", index],
+        });
+      }
+    });
+  });
+
+  server.registerTool(
     "create_e_invoice",
-    `Create an e-invoice (XRechnung/ZUGFeRD) with structured tax data. Requires address fields (street, zip, city, country, email) and tax type per line item.
+    {
+      description: `Create an e-invoice (XRechnung/ZUGFeRD) with structured tax data. Requires address fields (street, zip, city, country, email) and tax type per line item.
 
 Tax types: S (Standard rate), Z (Zero rated), AE (VAT Reverse Charge), K (Intra-community supply), G (Export outside EU), E (Exempt from tax).
 item_tax_amount is required when item_tax_type is "S".`,
-    {
-      ...baseInvoiceShape,
-      // Override address fields to required for e-invoice
-      street: z.string().describe("Street address (required for e-invoice)"),
-      zip: z.string().describe("ZIP/postal code (required for e-invoice)"),
-      city: z.string().describe("City (required for e-invoice)"),
-      country: z.string().describe("Country (required for e-invoice)"),
-      email: z.string().describe("Email address (required for e-invoice)"),
-
-      // E-invoice specific fields
-      e_invoice_id: z.string().describe("Buyer reference / Leitweg-ID (use '0' as default)"),
-      item_tax_type: z.array(eInvoiceTaxTypeSchema).describe("Tax type per line item: S, Z, AE, K, G, or E"),
-      item_tax_amount: z.array(z.string()).optional().describe("Tax amount per line item (required when tax_type is 'S')"),
-
-      invoicenumber: z.string().optional().describe("Custom invoice number (auto-generated if omitted)"),
-      payment_reference: z.string().optional().describe("Payment reference"),
+      inputSchema: eInvoiceInputSchema,
     },
     async (params) => {
       try {

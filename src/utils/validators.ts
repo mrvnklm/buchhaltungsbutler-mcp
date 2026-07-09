@@ -43,6 +43,17 @@ export const vatCodeSchema = z.enum([
   "19_both_app_1",
   "19_both_app_2",
   "7_both_app",
+  // §13b reverse-charge sub-variants (EU vs. non-EU counterparty, with/without
+  // Vorsteuerabzug) confirmed present in the live BuchhaltungsButler API spec
+  // (webapp.buchhaltungsbutler.de/api/v1) but previously missing here, which
+  // rejected otherwise-valid vat codes before the request ever reached the API.
+  "19_both_506",
+  "19_both_6506",
+  "19_both_511",
+  "19_both_6511",
+  "19_both_6501",
+  "19_both_app_506",
+  "19_both_app_511",
 ]);
 
 export const eInvoiceTaxTypeSchema = z.enum(["S", "Z", "AE", "K", "G", "E"]);
@@ -54,8 +65,3 @@ export const invoiceTypeSchema = z.enum(["invoice", "credit", "offer"]);
 export const accountTypeSchema = z.enum(["cash", "bank/institution", "other"]);
 
 export const showPricesTypeSchema = z.enum(["net", "gross"]);
-
-export const paginationSchema = z.object({
-  limit: z.number().int().min(1).optional(),
-  offset: z.number().int().min(0).optional(),
-});

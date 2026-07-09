@@ -65,6 +65,29 @@ describe("formatList", () => {
       expect(result).not.toContain("more items");
     });
   });
+
+  describe("note option", () => {
+    it("appends the note when provided", () => {
+      const items = [{ name: "Alice" }];
+      const result = formatList("Items", items, undefined, { note: "Note: something to flag." });
+      expect(result).toContain("Note: something to flag.");
+    });
+
+    it("omits any trailing note text when not provided", () => {
+      const items = [{ name: "Alice" }];
+      const result = formatList("Items", items);
+      expect(result).not.toContain("Note:");
+    });
+
+    it("appends the note after the truncation notice when both apply", () => {
+      const items = Array.from({ length: 20 }, (_, i) => ({ name: `Item ${i}` }));
+      const result = formatList("Items", items, undefined, { maxItems: 5, note: "Note: pagination stopped early." });
+      const truncationIndex = result.indexOf("more items");
+      const noteIndex = result.indexOf("Note: pagination stopped early.");
+      expect(truncationIndex).toBeGreaterThan(-1);
+      expect(noteIndex).toBeGreaterThan(truncationIndex);
+    });
+  });
 });
 
 describe("formatSingle", () => {
