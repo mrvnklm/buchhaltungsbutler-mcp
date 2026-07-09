@@ -5,6 +5,8 @@
 
 An MCP (Model Context Protocol) server that connects AI assistants like Claude to the [BuchhaltungsButler](https://www.buchhaltungsbutler.de/) German accounting API. Manage receipts, transactions, invoices, postings, and more through natural language.
 
+> **Disclaimer:** This is an unofficial, community-built project and is not affiliated with, endorsed by, or supported by BuchhaltungsButler. It is provided "AS IS", without warranty of any kind (see [License](#license)). This tool can create, modify, and delete real accounting data (receipts, transactions, postings, invoices) in your BuchhaltungsButler account via natural-language instructions to an AI assistant — always review what an AI assistant is about to do before confirming, and verify postings/bookings yourself before relying on them for tax filings or other compliance purposes. This project is not a substitute for professional tax or accounting advice.
+
 ## Features
 
 - **25 tools** covering the full BuchhaltungsButler API surface
