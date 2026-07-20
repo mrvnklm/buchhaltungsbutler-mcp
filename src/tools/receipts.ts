@@ -1,9 +1,13 @@
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { BbClient } from "../api/client.js";
 import { ApiError } from "../api/errors.js";
 import type { ApiResponse, BatchResponse } from "../types/common.js";
 import type { ReceiptListItem, ReceiptDetail } from "../types/api-responses.js";
+import { validateReceiptFilePath, detectReceiptMimeType } from "../utils/file-access.js";
 import { formatList, formatSingle, formatSuccess, formatBatchResult } from "../utils/formatters.js";
 import { fetchAllPages, paginationCapNote } from "../utils/pagination.js";
 import { dateSchema, receiptTypeSchema, listDirectionSchema, currencySchema } from "../utils/validators.js";
@@ -333,6 +337,32 @@ export async function fetchFileFromUrl(url: string): Promise<{ base64: string; f
   }
 }
 
+/**
+ * Read a receipt file from the local filesystem for a file:// URL.
+ * Guarded by validateReceiptFilePath (BB_ALLOWED_FILE_DIRS allowlist +
+ * sensitive-path blocklist); enforces the same size and type limits as
+ * HTTP(S) fetches.
+ */
+async function readFileFromFileUrl(url: URL): Promise<{ base64: string; fileName: string }> {
+  const rawPath = fileURLToPath(url);
+  const resolvedPath = await validateReceiptFilePath(rawPath);
+
+  const stats = await stat(resolvedPath);
+  if (!stats.isFile()) {
+    throw new Error(`Path is not a regular file: ${resolvedPath}`);
+  }
+  if (stats.size > MAX_FILE_SIZE) {
+    throw new Error(`File too large: ${stats.size} bytes (max ${MAX_FILE_SIZE})`);
+  }
+
+  const data = await readFile(resolvedPath);
+
+  // Local files carry no Content-Type header; gate on magic bytes instead.
+  await detectReceiptMimeType(data);
+
+  return { base64: data.toString("base64"), fileName: path.basename(resolvedPath) };
+}
+
 export function registerReceiptsTools(server: McpServer, client: BbClient): void {
   server.tool(
     "list_receipts",
@@ -551,7 +581,7 @@ export function registerReceiptsTools(server: McpServer, client: BbClient): void
     "Upload a receipt file (base64-encoded or from URL) with optional metadata",
     {
       file: z.string().optional().describe("Base64-encoded file content (provide this OR file_url)"),
-      file_url: z.url().optional().describe("URL to fetch the receipt file from (alternative to base64 file). Supports PDF, PNG, JPG up to 10MB."),
+      file_url: z.url().optional().describe("URL to fetch the receipt file from (alternative to base64 file). Supports PDF, PNG, JPG up to 10MB. Accepts http(s):// URLs, or file:// URLs for local files inside the directories allowed via the BB_ALLOWED_FILE_DIRS environment variable."),
       type: receiptTypeSchema.describe("Receipt type"),
       file_name: z.string().optional().describe("File name (recommended for base64 uploads)"),
       account: z.number().int().optional().describe("Payment account ID"),
@@ -592,7 +622,10 @@ export function registerReceiptsTools(server: McpServer, client: BbClient): void
 
         if (params.file_url) {
           try {
-            const fetched = await fetchFileFromUrl(params.file_url);
+            const parsedUrl = new URL(params.file_url);
+            const fetched = parsedUrl.protocol === "file:"
+              ? await readFileFromFileUrl(parsedUrl)
+              : await fetchFileFromUrl(params.file_url);
             fileContent = fetched.base64;
             if (!fileName) fileName = fetched.fileName;
           } catch (err) {

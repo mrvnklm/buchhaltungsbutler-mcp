@@ -1,5 +1,11 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { assertSafeReceiptUrl, fetchFileFromUrl } from "./receipts.js";
+import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from "vitest";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { assertSafeReceiptUrl, fetchFileFromUrl, registerReceiptsTools } from "./receipts.js";
+import type { BbClient } from "../api/client.js";
 
 const PDF_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]); // "%PDF-1.4"
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -457,5 +463,186 @@ describe("fetchFileFromUrl (redirects, content sniffing, filenames)", () => {
       expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(name)).toBe(false);
       expect(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(name)).toBe(false);
     });
+  });
+});
+
+type ToolHandler = (params: Record<string, unknown>) => Promise<{
+  content: Array<{ type: string; text: string }>;
+  isError?: boolean;
+}>;
+
+function getUploadReceiptHandler(client: BbClient): ToolHandler {
+  const handlers = new Map<string, ToolHandler>();
+  const server = {
+    tool: (name: string, ...rest: unknown[]) => {
+      const handler = rest[rest.length - 1] as ToolHandler;
+      handlers.set(name, handler);
+    },
+  } as unknown as McpServer;
+  registerReceiptsTools(server, client);
+  const handler = handlers.get("upload_receipt");
+  if (!handler) throw new Error("upload_receipt tool was not registered");
+  return handler;
+}
+
+function createFakeClient(): BbClient {
+  return {
+    request: vi.fn().mockResolvedValue({ success: true, message: "Receipt uploaded" }),
+  } as unknown as BbClient;
+}
+
+describe("upload_receipt file:// uploads", () => {
+  let allowedDir: string;
+  let outsideDir: string;
+  const MAX_FILE_SIZE = 10 * 1024 * 1024;
+
+  beforeAll(async () => {
+    allowedDir = await mkdtemp(path.join(os.tmpdir(), "bb-upload-allowed-"));
+    outsideDir = await mkdtemp(path.join(os.tmpdir(), "bb-upload-outside-"));
+
+    await writeFile(path.join(allowedDir, "invoice.pdf"), "%PDF-1.4\n%%EOF");
+    await writeFile(path.join(allowedDir, "notes.txt"), "not a receipt");
+    await writeFile(path.join(allowedDir, "fake.pdf"), "plain text disguised as pdf");
+    await writeFile(path.join(allowedDir, "huge.pdf"), Buffer.alloc(MAX_FILE_SIZE + 1));
+    await writeFile(path.join(outsideDir, "invoice.pdf"), "%PDF-1.4\n%%EOF");
+  });
+
+  afterAll(async () => {
+    await rm(allowedDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("uploads a local file from an allowed directory as base64", async () => {
+    vi.stubEnv("BB_ALLOWED_FILE_DIRS", allowedDir);
+    const client = createFakeClient();
+    const handler = getUploadReceiptHandler(client);
+
+    const result = await handler({
+      file_url: pathToFileURL(path.join(allowedDir, "invoice.pdf")).href,
+      type: "invoice inbound",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(client.request).toHaveBeenCalledWith(
+      "/receipts/upload",
+      expect.objectContaining({
+        file: Buffer.from("%PDF-1.4\n%%EOF").toString("base64"),
+        file_name: "invoice.pdf",
+        type: "invoice inbound",
+      }),
+      "upload"
+    );
+  });
+
+  it("keeps an explicit file_name over the basename", async () => {
+    vi.stubEnv("BB_ALLOWED_FILE_DIRS", allowedDir);
+    const client = createFakeClient();
+    const handler = getUploadReceiptHandler(client);
+
+    const result = await handler({
+      file_url: pathToFileURL(path.join(allowedDir, "invoice.pdf")).href,
+      file_name: "renamed.pdf",
+      type: "invoice inbound",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(client.request).toHaveBeenCalledWith(
+      "/receipts/upload",
+      expect.objectContaining({ file_name: "renamed.pdf" }),
+      "upload"
+    );
+  });
+
+  it("rejects file:// URLs when BB_ALLOWED_FILE_DIRS is not set", async () => {
+    const client = createFakeClient();
+    const handler = getUploadReceiptHandler(client);
+
+    const result = await handler({
+      file_url: pathToFileURL(path.join(allowedDir, "invoice.pdf")).href,
+      type: "invoice inbound",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("BB_ALLOWED_FILE_DIRS");
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  it("rejects files outside the allowed directories", async () => {
+    vi.stubEnv("BB_ALLOWED_FILE_DIRS", allowedDir);
+    const client = createFakeClient();
+    const handler = getUploadReceiptHandler(client);
+
+    const result = await handler({
+      file_url: pathToFileURL(path.join(outsideDir, "invoice.pdf")).href,
+      type: "invoice inbound",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/outside permitted directories/);
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  it("rejects files whose content is not PDF/PNG/JPEG", async () => {
+    vi.stubEnv("BB_ALLOWED_FILE_DIRS", allowedDir);
+    const client = createFakeClient();
+    const handler = getUploadReceiptHandler(client);
+
+    const result = await handler({
+      file_url: pathToFileURL(path.join(allowedDir, "notes.txt")).href,
+      type: "invoice inbound",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/Unsupported file type/);
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  it("rejects disallowed content even with an allowed extension (magic bytes win)", async () => {
+    vi.stubEnv("BB_ALLOWED_FILE_DIRS", allowedDir);
+    const client = createFakeClient();
+    const handler = getUploadReceiptHandler(client);
+
+    const result = await handler({
+      file_url: pathToFileURL(path.join(allowedDir, "fake.pdf")).href,
+      type: "invoice inbound",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/Unsupported file type/);
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  it("rejects files exceeding the 10MB limit", async () => {
+    vi.stubEnv("BB_ALLOWED_FILE_DIRS", allowedDir);
+    const client = createFakeClient();
+    const handler = getUploadReceiptHandler(client);
+
+    const result = await handler({
+      file_url: pathToFileURL(path.join(allowedDir, "huge.pdf")).href,
+      type: "invoice inbound",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/File too large/);
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-existent files inside an allowed directory", async () => {
+    vi.stubEnv("BB_ALLOWED_FILE_DIRS", allowedDir);
+    const client = createFakeClient();
+    const handler = getUploadReceiptHandler(client);
+
+    const result = await handler({
+      file_url: pathToFileURL(path.join(allowedDir, "missing.pdf")).href,
+      type: "invoice inbound",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/does not exist/);
+    expect(client.request).not.toHaveBeenCalled();
   });
 });
