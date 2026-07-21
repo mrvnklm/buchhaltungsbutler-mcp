@@ -1,6 +1,6 @@
 {
   "name": "buchhaltungsbutler-mcp",
-  "version": "1.1.2",
+  "version": "1.2.1",
   "description": "MCP server for BuchhaltungsButler accounting API",
   "license": "MIT",
   "author": "mrvnklm",
@@ -42,6 +42,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "file-type": "^22.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

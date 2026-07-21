@@ -35,7 +35,12 @@ export class BbClient {
       await this.rateLimiter.acquire(bucket);
     }
 
-    const body = this.encodeParams({ api_key: this.config.apiKey, ...params });
+    // JSON is the body format documented by the BHB API (all parameters are
+    // declared `in: body`; the official setup guide prescribes raw JSON with
+    // Content-Type: application/json). Unlike x-www-form-urlencoded, JSON can
+    // represent null array elements, which the API requires for
+    // oi_receipts_ids_by_customer (null = "this split line clears no receipt").
+    const body = JSON.stringify({ api_key: this.config.apiKey, ...params });
     const { maxAttempts } = this.retryConfig;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -44,7 +49,7 @@ export class BbClient {
           method: "POST",
           headers: {
             Authorization: this.authHeader,
-            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Type": "application/json",
           },
           body,
         });
@@ -96,44 +101,5 @@ export class BbClient {
     const { baseDelayMs, maxDelayMs } = this.retryConfig;
     const ms = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs) * Math.random();
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /**
-   * Encode params as x-www-form-urlencoded.
-   * Handles nested arrays for batch endpoints and invoice line items.
-   * e.g. { receipts: [{ type: "invoice" }] } => "receipts[0][type]=invoice"
-   */
-  private encodeParams(params: Record<string, unknown>): string {
-    const parts: string[] = [];
-
-    const encode = (key: string, value: unknown): void => {
-      if (value === undefined || value === null) return;
-
-      if (Array.isArray(value)) {
-        value.forEach((item, i) => {
-          if (typeof item === "object" && item !== null) {
-            for (const [k, v] of Object.entries(item as Record<string, unknown>)) {
-              encode(`${key}[${i}][${k}]`, v);
-            }
-          } else {
-            encode(`${key}[${i}]`, item);
-          }
-        });
-      } else if (typeof value === "object") {
-        for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-          encode(`${key}[${k}]`, v);
-        }
-      } else {
-        parts.push(
-          `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`
-        );
-      }
-    };
-
-    for (const [key, value] of Object.entries(params)) {
-      encode(key, value);
-    }
-
-    return parts.join("&");
   }
 }

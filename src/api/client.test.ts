@@ -133,6 +133,65 @@ describe("BbClient", () => {
     });
   });
 
+  describe("request encoding", () => {
+    it("sends params as a JSON body with Content-Type application/json", async () => {
+      const client = new BbClient(baseConfig);
+
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        mockFetchResponse({ success: true })
+      );
+
+      await client.request("/postings/add/transaction", {
+        transaction_id_by_customer: 5468,
+        amounts: ["97.48"],
+      });
+
+      const [url, init] = fetchSpy.mock.calls[0];
+      expect(url).toBe(`${baseConfig.baseUrl}/postings/add/transaction`);
+      expect((init!.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+      expect(JSON.parse(init!.body as string)).toEqual({
+        api_key: "test-key",
+        transaction_id_by_customer: 5468,
+        amounts: ["97.48"],
+      });
+    });
+
+    it("preserves null array elements (oi_receipts_ids_by_customer)", async () => {
+      const client = new BbClient(baseConfig);
+
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        mockFetchResponse({ success: true })
+      );
+
+      await client.request("/postings/add/transaction", {
+        transaction_id_by_customer: 5469,
+        oi_receipts_ids_by_customer: [1396, null],
+      });
+
+      const [, init] = fetchSpy.mock.calls[0];
+      const body = JSON.parse(init!.body as string);
+      expect(body.oi_receipts_ids_by_customer).toEqual([1396, null]);
+    });
+
+    it("omits undefined values from the body", async () => {
+      const client = new BbClient(baseConfig);
+
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        mockFetchResponse({ success: true })
+      );
+
+      await client.request("/receipts/get", {
+        list_direction: "inbound",
+        counterparty: undefined,
+      });
+
+      const [, init] = fetchSpy.mock.calls[0];
+      const body = JSON.parse(init!.body as string);
+      expect(body).toEqual({ api_key: "test-key", list_direction: "inbound" });
+      expect("counterparty" in body).toBe(false);
+    });
+  });
+
   describe("caching", () => {
     it("caches responses for cacheable endpoints", async () => {
       const client = new BbClient(baseConfig);
