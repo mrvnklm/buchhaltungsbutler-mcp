@@ -158,7 +158,7 @@ src/
 
 ### Design Decisions
 
-- **POST-only API**: BuchhaltungsButler uses POST for all endpoints with `x-www-form-urlencoded` bodies and Basic Auth
+- **POST-only API**: BuchhaltungsButler uses POST for all endpoints with JSON bodies and Basic Auth. JSON (rather than `x-www-form-urlencoded`) is the format documented by the BHB API and is required to express `null` array elements, e.g. in `oi_receipts_ids_by_customer`
 - **Consolidated tools**: Related CRUD operations (e.g., list/add/update/delete) are combined into single tools with an `action` parameter to reduce tool count
 - **Batch support**: Tools that support batch operations accept either single-item fields or an array, automatically routing to the correct API endpoint
 - **Rate limiting**: Token-bucket rate limiting per BB API endpoint category (general, batch, upload) — each bucket has its own burst capacity and refill rate; see `src/api/rate-limiter.ts` for exact values
