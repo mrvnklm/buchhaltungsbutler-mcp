@@ -19,14 +19,40 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 const MAX_REDIRECTS = 5;
 
+// 3xx codes that mean "fetch it elsewhere" and carry a Location. Other 3xx
+// codes (300 Multiple Choices, 304 Not Modified, the deprecated 305/306) are
+// not redirects to follow and fall through to the !response.ok check instead.
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
 // Content types that carry no real type information; for these the actual
 // file type is determined from the magic bytes instead. Hosts like Google
 // Drive serve PDFs/images as application/octet-stream.
 const GENERIC_CONTENT_TYPES = new Set(["application/octet-stream", "binary/octet-stream", "application/download"]);
 
+// Cloud metadata services reachable by hostname rather than by literal IP, so
+// the numeric checks below never see them. GCP's metadata.google.internal
+// resolves to 169.254.169.254, which is blocked as a literal but not by name.
+const BLOCKED_HOSTNAMES = new Set(["metadata.google.internal", "metadata.goog"]);
+
+const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d]; // "%PDF-"
+
+// PDF generators sometimes prepend a UTF-8 BOM or stray whitespace, and real
+// readers scan the first 1KB for the header rather than requiring offset 0.
+// PNG/JPEG signatures genuinely are at offset 0, so only PDF needs the scan.
+function hasPdfHeader(bytes: Uint8Array): boolean {
+  const limit = Math.min(bytes.length, 1024);
+  outer: for (let i = 0; i + PDF_MAGIC.length <= limit; i++) {
+    for (let j = 0; j < PDF_MAGIC.length; j++) {
+      if (bytes[i + j] !== PDF_MAGIC[j]) continue outer;
+    }
+    return true;
+  }
+  return false;
+}
+
 function sniffContentType(bytes: Uint8Array): string | null {
-  if (bytes.length >= 5 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d) {
-    return "application/pdf"; // %PDF-
+  if (hasPdfHeader(bytes)) {
+    return "application/pdf";
   }
   if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
     return "image/png";
@@ -37,31 +63,64 @@ function sniffContentType(bytes: Uint8Array): string | null {
   return null;
 }
 
+// The file name comes from a header chosen by the remote host -- and after a
+// redirect, by whatever server the chain happens to land on. Strip any path
+// component, control characters and leading dots so it cannot traverse
+// directories downstream, and so it cannot smuggle newlines into the tool
+// output, which is rendered back into the model's context.
+function sanitizeFileName(name: string): string {
+  const base = name.replace(/\\/g, "/").split("/").pop() ?? "";
+  // Drops control characters (Cc), formatting/bidi characters (Cf, e.g. the
+  // RIGHT-TO-LEFT OVERRIDE used to disguise extensions) and the Unicode line
+  // and paragraph separators (Zl/Zp -- U+2028/U+2029 are line terminators and
+  // would otherwise survive the C0 filter via percent-decoding).
+  // Slicing happens on the code-point array so a cap can never split a
+  // surrogate pair and leave ill-formed UTF-16 behind.
+  const clean = [...base]
+    .filter((ch) => !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(ch))
+    .slice(0, 255)
+    .join("")
+    .replace(/^\.+/, "")
+    .trim();
+  return clean || "receipt";
+}
+
 function fileNameFromResponse(finalUrl: URL, response: Response): string {
   const disposition = response.headers.get("content-disposition");
   if (disposition) {
-    const extended = disposition.match(/filename\*=(?:UTF-8''|utf-8'')?([^;]+)/i);
+    // RFC 5987/6266 extended form: filename*=charset'language'value. The
+    // language tag is routinely populated (e.g. UTF-8'de'Rechnung.pdf), so it
+    // has to be matched rather than assumed empty.
+    const extended = disposition.match(/filename\*=\s*[^';]*'[^']*'([^;]+)/i);
     if (extended) {
       try {
-        return decodeURIComponent(extended[1].trim().replace(/^"|"$/g, ""));
+        return sanitizeFileName(decodeURIComponent(extended[1].trim().replace(/^"|"$/g, "")));
       } catch {
         // malformed percent-encoding; fall through to the plain form
       }
     }
     const plain = disposition.match(/filename="?([^";]+)"?/i);
-    if (plain) return plain[1].trim();
+    if (plain) return sanitizeFileName(plain[1].trim());
   }
-  return finalUrl.pathname.split("/").pop() || "receipt";
+  // The final URL is redirect-controlled too, so sanitize this path as well.
+  return sanitizeFileName(finalUrl.pathname.split("/").pop() ?? "");
 }
 
-function isPrivateIPv4(a: number, b: number): boolean {
+function isPrivateIPv4(a: number, b: number, c: number): boolean {
   return (
     a === 127 || // loopback
     a === 10 || // RFC1918
     (a === 172 && b >= 16 && b <= 31) || // RFC1918
     (a === 192 && b === 168) || // RFC1918
     (a === 169 && b === 254) || // link-local incl. cloud metadata
-    a === 0 // "this network"
+    a === 0 || // "this network"
+    (a === 100 && b >= 64 && b <= 127) || // RFC6598 CGNAT; incl. Alibaba metadata 100.100.100.200
+    // Only 192.0.0.0/24 is reserved (RFC6890), and it holds Oracle's metadata
+    // address 192.0.0.192. The rest of 192.0.0.0/16 is ordinary public space --
+    // 192.0.78.0/24 is wordpress.com, 192.0.43.0/24 is iana.org.
+    (a === 192 && b === 0 && c === 0) ||
+    (a === 198 && (b === 18 || b === 19)) || // RFC2544 benchmarking
+    a >= 224 // multicast (224/4) and reserved (240/4), incl. 255.255.255.255
   );
 }
 
@@ -115,25 +174,89 @@ export function assertSafeReceiptUrl(url: URL): void {
     throw new Error("URLs pointing to localhost are not allowed");
   }
 
+  if (BLOCKED_HOSTNAMES.has(hostname) || hostname.endsWith(".metadata.google.internal")) {
+    throw new Error("URLs pointing to cloud metadata endpoints are not allowed");
+  }
+
   const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (ipv4Match) {
-    const [a, b] = ipv4Match.slice(1).map(Number);
-    if (isPrivateIPv4(a, b)) {
+    const [a, b, c] = ipv4Match.slice(1).map(Number);
+    if (isPrivateIPv4(a, b, c)) {
       throw new Error("URLs pointing to private/internal IP addresses are not allowed");
     }
   }
 
-  if (hostname === "::1" || hostname.startsWith("fe80:") || hostname.startsWith("fc") || hostname.startsWith("fd")) {
-    throw new Error("URLs pointing to private/internal IP addresses are not allowed");
+  // These prefix checks only make sense for IPv6 literals, which always contain
+  // a colon. Applying them to any hostname would wrongly block real domains
+  // that merely start with the same letters (fdroid.org, fcbayern.de, fdp.de).
+  //
+  // "::" (and the "::0" spelling) is the unspecified address: connecting to it
+  // reaches loopback, so it is blocked alongside "::1". fc00::/7 is unique-local,
+  // fe80::/10 link-local, ff00::/8 multicast.
+  if (hostname.includes(":")) {
+    if (
+      hostname === "::1" ||
+      hostname === "::" ||
+      hostname === "::0" ||
+      hostname.startsWith("fe80:") ||
+      hostname.startsWith("fc") ||
+      hostname.startsWith("fd") ||
+      hostname.startsWith("ff")
+    ) {
+      throw new Error("URLs pointing to private/internal IP addresses are not allowed");
+    }
   }
 
   const embeddedIPv4 = extractEmbeddedIPv4(hostname);
   if (embeddedIPv4) {
-    const [a, b] = embeddedIPv4;
-    if (isPrivateIPv4(a, b)) {
+    const [a, b, c] = embeddedIPv4;
+    if (isPrivateIPv4(a, b, c)) {
       throw new Error("URLs pointing to private/internal IP addresses are not allowed");
     }
   }
+}
+
+// Releases an unread body so the underlying socket is not held until GC.
+async function discardBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // best effort — the connection is being abandoned anyway
+  }
+}
+
+// Reads the body with a running byte cap instead of buffering it whole and
+// checking afterwards: a host that omits Content-Length could otherwise stream
+// arbitrarily many bytes into memory before any size check ran.
+async function readBodyWithLimit(response: Response, limit: number): Promise<Uint8Array> {
+  if (!response.body) return new Uint8Array(0);
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > limit) {
+        throw new Error(`File too large: exceeds ${limit} bytes`);
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  }
+
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
 }
 
 export async function fetchFileFromUrl(url: string): Promise<{ base64: string; fileName: string }> {
@@ -147,48 +270,54 @@ export async function fetchFileFromUrl(url: string): Promise<{ base64: string; f
     // Follow redirects manually so every hop passes the SSRF guard — a
     // redirect from a public host to an internal address must be blocked,
     // which redirect: "follow" cannot do.
+    // NB: relies on the runtime returning the real status and Location for
+    // redirect: "manual" (Node/undici does). A runtime that instead returns the
+    // WHATWG opaque-redirect response (status 0, headers stripped) would skip
+    // this loop and surface every redirect as "Failed to fetch file: HTTP 0".
     let response = await fetch(currentUrl, { signal: controller.signal, redirect: "manual" });
-    for (let hop = 0; response.status >= 300 && response.status < 400; hop++) {
+    for (let hop = 0; REDIRECT_STATUSES.has(response.status); hop++) {
       if (hop >= MAX_REDIRECTS) {
+        await discardBody(response);
         throw new Error(`Too many redirects (max ${MAX_REDIRECTS})`);
       }
       const location = response.headers.get("location");
       if (!location) {
+        await discardBody(response);
         throw new Error(`Redirect (HTTP ${response.status}) without Location header`);
       }
-      await response.body?.cancel();
+      await discardBody(response);
       currentUrl = new URL(location, currentUrl);
       assertSafeReceiptUrl(currentUrl);
       response = await fetch(currentUrl, { signal: controller.signal, redirect: "manual" });
     }
 
     if (!response.ok) {
+      await discardBody(response);
       throw new Error(`Failed to fetch file: HTTP ${response.status}`);
     }
 
     const contentLength = response.headers.get("content-length");
     if (contentLength && parseInt(contentLength, 10) > MAX_FILE_SIZE) {
+      await discardBody(response);
       throw new Error(`File too large: ${contentLength} bytes (max ${MAX_FILE_SIZE})`);
     }
 
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > MAX_FILE_SIZE) {
-      throw new Error(`File too large: ${buffer.byteLength} bytes (max ${MAX_FILE_SIZE})`);
-    }
-
-    const bytes = new Uint8Array(buffer);
-
-    // A declared whitelisted content type is accepted as-is. Generic or
-    // absent content types (e.g. Google Drive's application/octet-stream)
-    // are accepted only when the magic bytes identify a PDF/PNG/JPEG.
+    // Checked before reading the body so an unsupported type is rejected
+    // without buffering up to 10MB of it first.
     const contentType = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
     if (contentType && !ALLOWED_CONTENT_TYPES.has(contentType) && !GENERIC_CONTENT_TYPES.has(contentType)) {
+      await discardBody(response);
       throw new Error(`Unsupported file type: ${contentType}. Allowed: PDF, PNG, JPG`);
     }
-    if (!contentType || GENERIC_CONTENT_TYPES.has(contentType)) {
-      if (!sniffContentType(bytes)) {
-        throw new Error(`Unsupported file type: content is not a PDF, PNG, or JPEG (served as ${contentType ?? "unknown"})`);
-      }
+
+    const bytes = await readBodyWithLimit(response, MAX_FILE_SIZE);
+    // Sniff unconditionally rather than trusting a whitelisted declared type:
+    // the Content-Type is chosen by the remote host, so honouring it would let
+    // any server opt out of this check by labelling arbitrary bytes
+    // "application/pdf". It also rejects the common case of an HTML error page
+    // served under a PDF content type by an expired or permission-denied link.
+    if (!sniffContentType(bytes)) {
+      throw new Error(`Unsupported file type: content is not a PDF, PNG, or JPEG (served as ${contentType ?? "unknown"})`);
     }
 
     // Convert to base64 using the standard Web API (btoa) rather than Node's Buffer.

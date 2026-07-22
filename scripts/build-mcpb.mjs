@@ -40,9 +40,16 @@ execFileSync("npm", ["install", "--omit=dev", "--no-audit", "--no-fund"], {
 
 console.log("Packing .mcpb bundle...");
 if (existsSync(outFile)) rmSync(outFile);
-// Resolves the pinned @anthropic-ai/mcpb devDependency from node_modules/.bin
-// rather than fetching an unpinned "latest" from the registry.
-execFileSync("npx", ["mcpb", "pack", stageDir, outFile], {
+// Run the pinned @anthropic-ai/mcpb devDependency directly from node_modules.
+// Going through `npx mcpb` would fall back to *installing* the unscoped "mcpb"
+// package from the registry when the devDependency is missing, which is a name
+// this project does not control -- and this script runs in the release job.
+const mcpbCli = join(root, "node_modules", "@anthropic-ai", "mcpb", "dist", "cli", "cli.js");
+if (!existsSync(mcpbCli)) {
+  console.error(`Missing ${mcpbCli}\nRun "npm ci" (or "npm install") first.`);
+  process.exit(1);
+}
+execFileSync(process.execPath, [mcpbCli, "pack", stageDir, outFile], {
   cwd: root,
   stdio: "inherit",
 });
