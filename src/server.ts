@@ -16,16 +16,24 @@ import { registerInvoicesTools } from "./tools/invoices.js";
 
 // package.json sits one directory above dist/ (repo root, npm package root,
 // and the .mcpb bundle root all share this layout) -- read it directly
-// instead of hardcoding a version that drifts out of sync.
-const packageDir = dirname(fileURLToPath(import.meta.url));
-const { version: packageVersion } = JSON.parse(
-  readFileSync(join(packageDir, "..", "package.json"), "utf8")
-) as { version: string };
+// instead of hardcoding a version that drifts out of sync. Falls back to a
+// placeholder rather than throwing: this is a cosmetic value reported to MCP
+// clients and must never prevent the server from starting.
+function readPackageVersion(): string {
+  try {
+    const packageDir = dirname(fileURLToPath(import.meta.url));
+    const pkg: unknown = JSON.parse(readFileSync(join(packageDir, "..", "package.json"), "utf8"));
+    const version = (pkg as { version?: unknown }).version;
+    return typeof version === "string" ? version : "0.0.0-unknown";
+  } catch {
+    return "0.0.0-unknown";
+  }
+}
 
 export function createServer(config: BbConfig): McpServer {
   const server = new McpServer({
     name: "buchhaltungsbutler",
-    version: packageVersion,
+    version: readPackageVersion(),
   });
 
   const client = new BbClient(config);
