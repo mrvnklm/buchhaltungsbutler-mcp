@@ -40,7 +40,9 @@ execFileSync("npm", ["install", "--omit=dev", "--no-audit", "--no-fund"], {
 
 console.log("Packing .mcpb bundle...");
 if (existsSync(outFile)) rmSync(outFile);
-execFileSync("npx", ["--yes", "@anthropic-ai/mcpb", "pack", stageDir, outFile], {
+// Resolves the pinned @anthropic-ai/mcpb devDependency from node_modules/.bin
+// rather than fetching an unpinned "latest" from the registry.
+execFileSync("npx", ["mcpb", "pack", stageDir, outFile], {
   cwd: root,
   stdio: "inherit",
 });

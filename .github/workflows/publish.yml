@@ -48,13 +48,16 @@ jobs:
             exit 1
           fi
 
+      # Runs before publishing so a packaging failure blocks the (irreversible)
+      # npm publish step below, instead of leaving a published package with no
+      # matching GitHub Release.
+      - name: Build .mcpb extension
+        run: npm run build:mcpb
+
       # Authenticates via OIDC trusted publishing (configured in npm package
       # settings for this repo + workflow) -- no NPM_TOKEN secret needed.
       - name: Publish to npm
         run: npm publish --provenance --access public
-
-      - name: Build .mcpb extension
-        run: npm run build:mcpb
 
       - name: Create GitHub Release
         env:
