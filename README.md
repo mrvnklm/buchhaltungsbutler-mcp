@@ -42,18 +42,14 @@ Both options need these three values from your BuchhaltungsButler account:
 
 These act like a password for your accounting data, so treat them the same way (don't share them, don't paste them into chat messages, don't commit them to a public repo). If you don't see an API section, your BuchhaltungsButler plan may not include API access — check with their support.
 
-### 2. Install Claude Desktop
-
-Download it from [claude.ai/download](https://claude.ai/download) for Mac or Windows, if you haven't already.
-
-### 3a. Option A: Install as a one-click extension
+### 2a. Option A: Install as a one-click extension
 
 1. Go to the [latest release](https://github.com/mrvnklm/buchhaltungsbutler-mcp/releases/latest) and download the `.mcpb` file (under "Assets").
 2. Open Claude Desktop, open the menu → **File → Settings → Extensions**, and drag the downloaded `.mcpb` file into that window (or click "Install Extension…" and select it).
 3. Claude Desktop will show a form asking for **API Client**, **API Secret**, and **API Key** — paste in the three values from step 1.
-4. Click **Install**. That's it — skip ahead to [step 4](#4-verify-it-worked).
+4. Click **Install**. That's it — skip ahead to [step 3](#3-verify-it-worked).
 
-### 3b. Option B: Manual config file
+### 2b. Option B: Manual config file
 
 Claude Desktop reads its list of MCP servers from a config file, which usually doesn't exist yet — you'll create it.
 
@@ -92,7 +88,7 @@ Claude Desktop reads its list of MCP servers from a config file, which usually d
 
 Save the file, then fully quit and reopen Claude Desktop (Mac: `Cmd+Q`; Windows: right-click the tray icon → **Quit** — closing the window alone isn't enough, and the config is only read on startup).
 
-### 4. Verify it worked
+### 3. Verify it worked
 
 Open a new chat in Claude Desktop and look for a tools icon near the message box, or check **Settings → Extensions** / **Developer** — `buchhaltungsbutler` should be listed. Then try asking:
 
@@ -113,6 +109,12 @@ If Claude calls the tool and shows your accounts, it's working.
 ### Running from source instead
 
 If you want to modify the code, see [Contributing](#contributing) below.
+
+### Compatibility
+
+This server uses the stdio MCP transport (a local process launched via `npx`), so it works with Claude Desktop, Cursor, and other MCP clients that support local stdio servers.
+
+**ChatGPT is not supported.** ChatGPT's connector/app support requires a remote HTTPS MCP server rather than a local process — it cannot launch or talk to a local `npx` server at all, even during development. Connecting this server to ChatGPT would require hosting it separately as a remote HTTP endpoint, which isn't implemented here.
 
 ## Tool Reference
 
