@@ -6,7 +6,7 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: read
+  contents: write # required to create the GitHub Release with the .mcpb asset
   id-token: write # required for OIDC trusted publishing + provenance
 
 jobs:
@@ -48,7 +48,23 @@ jobs:
             exit 1
           fi
 
+      # Runs before publishing so a packaging failure blocks the (irreversible)
+      # npm publish step below, instead of leaving a published package with no
+      # matching GitHub Release.
+      - name: Build .mcpb extension
+        run: npm run build:mcpb
+
       # Authenticates via OIDC trusted publishing (configured in npm package
       # settings for this repo + workflow) -- no NPM_TOKEN secret needed.
       - name: Publish to npm
         run: npm publish --provenance --access public
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            buchhaltungsbutler-mcp.mcpb
