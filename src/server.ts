@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BbClient } from "./api/client.js";
 import type { BbConfig } from "./types/common.js";
@@ -11,10 +14,26 @@ import { registerTransactionsTools } from "./tools/transactions.js";
 import { registerPostingsTools } from "./tools/postings.js";
 import { registerInvoicesTools } from "./tools/invoices.js";
 
+// package.json sits one directory above dist/ (repo root, npm package root,
+// and the .mcpb bundle root all share this layout) -- read it directly
+// instead of hardcoding a version that drifts out of sync. Falls back to a
+// placeholder rather than throwing: this is a cosmetic value reported to MCP
+// clients and must never prevent the server from starting.
+function readPackageVersion(): string {
+  try {
+    const packageDir = dirname(fileURLToPath(import.meta.url));
+    const pkg: unknown = JSON.parse(readFileSync(join(packageDir, "..", "package.json"), "utf8"));
+    const version = (pkg as { version?: unknown }).version;
+    return typeof version === "string" ? version : "0.0.0-unknown";
+  } catch {
+    return "0.0.0-unknown";
+  }
+}
+
 export function createServer(config: BbConfig): McpServer {
   const server = new McpServer({
     name: "buchhaltungsbutler",
-    version: "1.1.0",
+    version: readPackageVersion(),
   });
 
   const client = new BbClient(config);
