@@ -10,6 +10,7 @@ npm install
 npm run build      # tsc
 npm test           # vitest run
 npx tsc --noEmit   # typecheck only
+npm run build:mcpb # optional: package as a .mcpb Claude Desktop extension
 ```
 
 You'll need BuchhaltungsButler API credentials to exercise the server
@@ -56,7 +57,13 @@ npm version patch   # or minor / major -- bumps package.json and creates a git t
 git push --follow-tags
 ```
 
-CI then builds, typechecks, tests, and runs `npm publish --provenance` using
-the `NPM_TOKEN` repository secret. The workflow verifies the pushed tag
-matches `package.json`'s version before publishing, so a manual `npm version`
-mismatch fails loudly instead of publishing the wrong thing.
+CI then builds, typechecks, tests, and runs `npm publish --provenance` via
+OIDC trusted publishing (no `NPM_TOKEN` secret needed). The workflow verifies
+the pushed tag matches `package.json`'s version before publishing, so a
+manual `npm version` mismatch fails loudly instead of publishing the wrong
+thing. It then builds the `.mcpb` Claude Desktop extension and attaches it to
+a GitHub Release for the tag, alongside auto-generated release notes.
+
+`manifest.json` (used for the `.mcpb` build) has its own `version` field —
+`npm run build:mcpb` overwrites it from `package.json` at build time, so you
+don't need to bump it by hand.

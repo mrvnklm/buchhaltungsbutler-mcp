@@ -1,0 +1,92 @@
+{
+  "manifest_version": "0.3",
+  "name": "buchhaltungsbutler-mcp",
+  "display_name": "BuchhaltungsButler",
+  "version": "1.1.2",
+  "description": "Manage receipts, transactions, invoices, and postings in BuchhaltungsButler through natural language.",
+  "long_description": "Connects Claude to the BuchhaltungsButler German accounting API. Covers accounts, transactions, receipts, postings, invoices (including e-invoicing/XRechnung/ZUGFeRD), debtors, creditors, and cost locations.\n\nThis is an unofficial, community-built project and is not affiliated with, endorsed by, or supported by BuchhaltungsButler. It can create, modify, and delete real accounting data -- always review what Claude is about to do before confirming, and verify postings/bookings yourself before relying on them for tax filings or other compliance purposes.",
+  "author": {
+    "name": "mrvnklm",
+    "url": "https://github.com/mrvnklm"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mrvnklm/buchhaltungsbutler-mcp.git"
+  },
+  "homepage": "https://github.com/mrvnklm/buchhaltungsbutler-mcp",
+  "documentation": "https://github.com/mrvnklm/buchhaltungsbutler-mcp#readme",
+  "support": "https://github.com/mrvnklm/buchhaltungsbutler-mcp/issues",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "BB_API_CLIENT": "${user_config.bb_api_client}",
+        "BB_API_SECRET": "${user_config.bb_api_secret}",
+        "BB_API_KEY": "${user_config.bb_api_key}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "list_accounts", "description": "List all payment/bank accounts (Zahlungskonten)" },
+    { "name": "create_account", "description": "Create a new payment/bank account" },
+    { "name": "list_transactions", "description": "List bank transactions with filters (date, account, sender/recipient)" },
+    { "name": "get_transaction", "description": "Get a single transaction by ID" },
+    { "name": "create_transaction", "description": "Create one or batch (up to 50) transactions" },
+    { "name": "assign_receipt_to_transaction", "description": "Assign, unassign, or batch-assign receipts to transactions" },
+    { "name": "get_assigned_documents", "description": "Get receipts assigned to a transaction, or transactions assigned to a receipt" },
+    { "name": "list_receipts", "description": "List receipts (Belege) with filters (direction, dates, status, counterparty)" },
+    { "name": "get_receipt", "description": "Get a single receipt by ID, optionally including file content" },
+    { "name": "create_receipt", "description": "Create one or batch (up to 50) receipts" },
+    { "name": "upload_receipt", "description": "Upload a receipt file (base64 or URL) with optional metadata" },
+    { "name": "manage_receipt", "description": "Delete or restore a receipt" },
+    { "name": "list_postings", "description": "List postings (Buchungen) within a date range" },
+    { "name": "create_posting", "description": "Create receipt, transaction, or free postings (single or batch)" },
+    { "name": "unconfirm_posting", "description": "Reopen a posting to allow modifications" },
+    { "name": "assign_receipt_to_posting", "description": "Assign a receipt to an existing free posting" },
+    { "name": "create_invoice", "description": "Create and finalize an invoice, credit note, or offer" },
+    { "name": "create_e_invoice", "description": "Create an e-invoice (XRechnung/ZUGFeRD) with structured tax data" },
+    { "name": "create_invoice_draft", "description": "Create an invoice draft for later editing" },
+    { "name": "manage_debtors", "description": "List, add, batch-add, or update debtor accounts (Debitoren)" },
+    { "name": "manage_creditors", "description": "List, add, batch-add, or update creditor accounts (Kreditoren)" },
+    { "name": "manage_posting_accounts", "description": "List, add, or update posting accounts (Buchungskonten)" },
+    { "name": "list_cost_locations", "description": "List cost locations (Kostenstellen)" },
+    { "name": "manage_cost_location", "description": "Add, update, or delete a cost location" },
+    { "name": "add_comment", "description": "Add a comment to a transaction or receipt" }
+  ],
+  "keywords": ["mcp", "buchhaltungsbutler", "accounting", "german", "api"],
+  "license": "MIT",
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  },
+  "user_config": {
+    "bb_api_client": {
+      "type": "string",
+      "title": "API Client",
+      "description": "Your BuchhaltungsButler API Client ID (found under Settings → API in your BuchhaltungsButler account)",
+      "sensitive": true,
+      "required": true
+    },
+    "bb_api_secret": {
+      "type": "string",
+      "title": "API Secret",
+      "description": "Your BuchhaltungsButler API Secret (found under Settings → API in your BuchhaltungsButler account)",
+      "sensitive": true,
+      "required": true
+    },
+    "bb_api_key": {
+      "type": "string",
+      "title": "API Key",
+      "description": "Your BuchhaltungsButler API Key (found under Settings → API in your BuchhaltungsButler account)",
+      "sensitive": true,
+      "required": true
+    }
+  },
+  "privacy_policies": []
+}

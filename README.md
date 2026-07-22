@@ -21,21 +21,54 @@ An MCP (Model Context Protocol) server that connects AI assistants like Claude t
 - **E-invoicing** support (XRechnung/ZUGFeRD) with structured tax data
 - **Zod validation** on all tool inputs with descriptive error messages
 - **LLM-friendly output** formatting for structured, readable responses
+- **One-click Claude Desktop install** via a `.mcpb` extension bundle — no terminal or config file editing required
 
 ## Quick Start
 
-### Prerequisites
+This gets the server connected to **Claude Desktop** — no coding required, works the same on Mac and Windows. Takes about 5 minutes.
 
-You need BuchhaltungsButler API credentials:
-- `BB_API_CLIENT` - API client ID
-- `BB_API_SECRET` - API client secret
-- `BB_API_KEY` - API key for your account
+There are two ways to install it — pick one:
 
-These are available in your BuchhaltungsButler account under Settings > API.
+- **Option A — one-click extension (easiest):** download a `.mcpb` file and drag it into Claude Desktop. No terminal, no editing JSON files.
+- **Option B — manual config:** edit Claude Desktop's config file by hand. A few more steps, but works on any Claude Desktop version.
 
-### Claude Desktop Configuration
+### 1. Get your BuchhaltungsButler API credentials
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Both options need these three values from your BuchhaltungsButler account:
+
+1. Log in to [BuchhaltungsButler](https://www.buchhaltungsbutler.de/) in your browser.
+2. Go to **Einstellungen** (Settings) → **API**.
+3. You'll find three values there: **API Client**, **API Secret**, and **API Key**. Keep this tab open — you'll copy them in a moment.
+
+These act like a password for your accounting data, so treat them the same way (don't share them, don't paste them into chat messages, don't commit them to a public repo). If you don't see an API section, your BuchhaltungsButler plan may not include API access — check with their support.
+
+### 2. Install Claude Desktop
+
+Download it from [claude.ai/download](https://claude.ai/download) for Mac or Windows, if you haven't already.
+
+### 3a. Option A: Install as a one-click extension
+
+1. Go to the [latest release](https://github.com/mrvnklm/buchhaltungsbutler-mcp/releases/latest) and download the `.mcpb` file (under "Assets").
+2. Open Claude Desktop, open the menu → **File → Settings → Extensions**, and drag the downloaded `.mcpb` file into that window (or click "Install Extension…" and select it).
+3. Claude Desktop will show a form asking for **API Client**, **API Secret**, and **API Key** — paste in the three values from step 1.
+4. Click **Install**. That's it — skip ahead to [step 4](#4-verify-it-worked).
+
+### 3b. Option B: Manual config file
+
+Claude Desktop reads its list of MCP servers from a config file, which usually doesn't exist yet — you'll create it.
+
+**On Mac:**
+1. Open **Finder**, press `Cmd+Shift+G` ("Go to Folder"), and paste in:
+   ```
+   ~/Library/Application Support/Claude/
+   ```
+2. Open (or create) a file named `claude_desktop_config.json` there in a plain text editor — TextEdit works, but make sure **Format → Make Plain Text** is selected first, otherwise it saves rich text and Claude Desktop won't be able to read it.
+
+**On Windows:**
+1. Press `Win+R`, type `%APPDATA%\Claude`, and press Enter.
+2. Open (or create) a file named `claude_desktop_config.json` there in Notepad.
+
+**Paste this in**, replacing the three placeholder values with your credentials from step 1:
 
 ```json
 {
@@ -53,7 +86,29 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 }
 ```
 
-That's it — no clone or manual build. `npx` downloads and caches the [npm package](https://www.npmjs.com/package/buchhaltungsbutler-mcp) automatically the first time it runs, and picks up new versions on restart.
+`npx` needs Node.js installed. If you don't have it, download the **LTS** installer from [nodejs.org](https://nodejs.org/) (accept the defaults) — no other setup needed. `npx` then downloads and caches the [npm package](https://www.npmjs.com/package/buchhaltungsbutler-mcp) automatically the first time it runs, and picks up new versions on restart.
+
+> If the file already has other servers configured under `mcpServers`, add a comma after the previous entry's closing `}` and paste `"buchhaltungsbutler": { ... }` in as a new entry, instead of replacing the whole file — JSON is picky about commas and braces, so a [validator](https://jsonlint.com/) helps if something doesn't work.
+
+Save the file, then fully quit and reopen Claude Desktop (Mac: `Cmd+Q`; Windows: right-click the tray icon → **Quit** — closing the window alone isn't enough, and the config is only read on startup).
+
+### 4. Verify it worked
+
+Open a new chat in Claude Desktop and look for a tools icon near the message box, or check **Settings → Extensions** / **Developer** — `buchhaltungsbutler` should be listed. Then try asking:
+
+> "List my BuchhaltungsButler accounts"
+
+If Claude calls the tool and shows your accounts, it's working.
+
+### Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `buchhaltungsbutler` doesn't show up at all | Fully quit and reopen Claude Desktop (not just close the window). For Option B, double-check the JSON has no missing commas or braces. |
+| "spawn npx ENOENT" or a similar "command not found" error (Option B) | Node.js isn't installed or isn't on your PATH. Install it from [nodejs.org](https://nodejs.org/), restart your computer, then retry. |
+| Tool calls fail with an authentication/permission error | Double-check `BB_API_CLIENT`, `BB_API_SECRET`, and `BB_API_KEY` are copied exactly (no extra spaces) from BuchhaltungsButler → Settings → API. |
+| Edited the config but nothing changed (Option B) | Claude Desktop only reads the config file on startup — fully quit and reopen after every edit. |
+| Still stuck | Check the logs — Mac: `~/Library/Logs/Claude/mcp*.log`; Windows: `%APPDATA%\Claude\logs\mcp*.log` — or open an [issue on GitHub](https://github.com/mrvnklm/buchhaltungsbutler-mcp/issues). |
 
 ### Running from source instead
 
