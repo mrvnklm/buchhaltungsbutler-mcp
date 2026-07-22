@@ -17,6 +17,43 @@ const ALLOWED_CONTENT_TYPES = new Set([
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
+const MAX_REDIRECTS = 5;
+
+// Content types that carry no real type information; for these the actual
+// file type is determined from the magic bytes instead. Hosts like Google
+// Drive serve PDFs/images as application/octet-stream.
+const GENERIC_CONTENT_TYPES = new Set(["application/octet-stream", "binary/octet-stream", "application/download"]);
+
+function sniffContentType(bytes: Uint8Array): string | null {
+  if (bytes.length >= 5 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d) {
+    return "application/pdf"; // %PDF-
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return "image/png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  return null;
+}
+
+function fileNameFromResponse(finalUrl: URL, response: Response): string {
+  const disposition = response.headers.get("content-disposition");
+  if (disposition) {
+    const extended = disposition.match(/filename\*=(?:UTF-8''|utf-8'')?([^;]+)/i);
+    if (extended) {
+      try {
+        return decodeURIComponent(extended[1].trim().replace(/^"|"$/g, ""));
+      } catch {
+        // malformed percent-encoding; fall through to the plain form
+      }
+    }
+    const plain = disposition.match(/filename="?([^";]+)"?/i);
+    if (plain) return plain[1].trim();
+  }
+  return finalUrl.pathname.split("/").pop() || "receipt";
+}
+
 function isPrivateIPv4(a: number, b: number): boolean {
   return (
     a === 127 || // loopback
@@ -99,23 +136,34 @@ export function assertSafeReceiptUrl(url: URL): void {
   }
 }
 
-async function fetchFileFromUrl(url: string): Promise<{ base64: string; fileName: string }> {
-  const parsedUrl = new URL(url);
-  assertSafeReceiptUrl(parsedUrl);
+export async function fetchFileFromUrl(url: string): Promise<{ base64: string; fileName: string }> {
+  let currentUrl = new URL(url);
+  assertSafeReceiptUrl(currentUrl);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
 
   try {
-    const response = await fetch(url, { signal: controller.signal, redirect: "error" });
+    // Follow redirects manually so every hop passes the SSRF guard — a
+    // redirect from a public host to an internal address must be blocked,
+    // which redirect: "follow" cannot do.
+    let response = await fetch(currentUrl, { signal: controller.signal, redirect: "manual" });
+    for (let hop = 0; response.status >= 300 && response.status < 400; hop++) {
+      if (hop >= MAX_REDIRECTS) {
+        throw new Error(`Too many redirects (max ${MAX_REDIRECTS})`);
+      }
+      const location = response.headers.get("location");
+      if (!location) {
+        throw new Error(`Redirect (HTTP ${response.status}) without Location header`);
+      }
+      await response.body?.cancel();
+      currentUrl = new URL(location, currentUrl);
+      assertSafeReceiptUrl(currentUrl);
+      response = await fetch(currentUrl, { signal: controller.signal, redirect: "manual" });
+    }
 
     if (!response.ok) {
       throw new Error(`Failed to fetch file: HTTP ${response.status}`);
-    }
-
-    const contentType = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
-    if (contentType && !ALLOWED_CONTENT_TYPES.has(contentType)) {
-      throw new Error(`Unsupported file type: ${contentType}. Allowed: PDF, PNG, JPG`);
     }
 
     const contentLength = response.headers.get("content-length");
@@ -129,6 +177,20 @@ async function fetchFileFromUrl(url: string): Promise<{ base64: string; fileName
     }
 
     const bytes = new Uint8Array(buffer);
+
+    // A declared whitelisted content type is accepted as-is. Generic or
+    // absent content types (e.g. Google Drive's application/octet-stream)
+    // are accepted only when the magic bytes identify a PDF/PNG/JPEG.
+    const contentType = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
+    if (contentType && !ALLOWED_CONTENT_TYPES.has(contentType) && !GENERIC_CONTENT_TYPES.has(contentType)) {
+      throw new Error(`Unsupported file type: ${contentType}. Allowed: PDF, PNG, JPG`);
+    }
+    if (!contentType || GENERIC_CONTENT_TYPES.has(contentType)) {
+      if (!sniffContentType(bytes)) {
+        throw new Error(`Unsupported file type: content is not a PDF, PNG, or JPEG (served as ${contentType ?? "unknown"})`);
+      }
+    }
+
     // Convert to base64 using the standard Web API (btoa) rather than Node's Buffer.
     let binary = "";
     for (let i = 0; i < bytes.length; i++) {
@@ -136,11 +198,7 @@ async function fetchFileFromUrl(url: string): Promise<{ base64: string; fileName
     }
     const base64 = btoa(binary);
 
-    // Extract filename from URL path
-    const urlPath = new URL(url).pathname;
-    const fileName = urlPath.split("/").pop() || "receipt";
-
-    return { base64, fileName };
+    return { base64, fileName: fileNameFromResponse(currentUrl, response) };
   } finally {
     clearTimeout(timeout);
   }
