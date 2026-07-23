@@ -231,7 +231,23 @@ src/
 | `BB_RETRY_MAX_ATTEMPTS` | No | `3` | Max retry attempts on transient errors |
 | `BB_RETRY_BASE_DELAY_MS` | No | `1000` | Base delay for exponential backoff (ms) |
 | `BB_RETRY_MAX_DELAY_MS` | No | `8000` | Max delay cap for backoff (ms) |
-| `BB_ALLOWED_FILE_DIRS` | No | - (file:// uploads disabled) | Directories from which `upload_receipt` may read local files via `file://` URLs. Separated by the platform path delimiter (`:` on Linux/macOS, `;` on Windows); a leading `~` is expanded. Paths are canonically resolved (symlinks followed) before checking, and well-known sensitive locations (`.env` files, `.ssh`/`.aws`, credential files, `/proc` etc.) are always blocked. |
+| `BB_ALLOWED_FILE_DIRS` | No | - (file:// uploads disabled) | Directories from which `upload_receipt` may read local files via `file://` URLs. Separated by the platform path delimiter (`:` on Linux/macOS, `;` on Windows); a leading `~` is expanded. See the note below before enabling. |
+
+> **Before enabling `BB_ALLOWED_FILE_DIRS`:** this lets the model read files from
+> the listed directories and upload them to BuchhaltungsButler. Tool arguments can
+> be influenced by content the model has read (a web page, an email, a PDF), so
+> treat an allowed directory as "anything in here may leave the machine". Point it
+> at a dedicated receipts folder, not at `~` or a whole project tree.
+>
+> Paths are canonically resolved before checking, so symlinks and `..` cannot
+> escape the allowlist, and the final open uses `O_NOFOLLOW` so a name swapped
+> after validation is refused rather than followed. Well-known sensitive locations
+> (`.env` files, `.ssh`/`.aws`, credential filenames, `/proc`, `/dev`, …) are
+> blocked outright — but that blocklist is best-effort defence in depth, not a
+> boundary. Two limits are inherent: **hardlinks** are indistinguishable from
+> ordinary files, so a hardlink created inside an allowed directory reaches its
+> target and bypasses the name-based blocklist; and anything genuinely inside an
+> allowed directory is readable regardless of what it contains.
 
 ## MCP Resources
 

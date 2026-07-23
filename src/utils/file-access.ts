@@ -1,7 +1,6 @@
 import { realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileTypeFromBuffer } from "file-type";
 
 /**
  * Local file access control for file:// receipt uploads, modeled after
@@ -10,20 +9,34 @@ import { fileTypeFromBuffer } from "file-type";
  * - Reads are only permitted inside directories explicitly listed in the
  *   BB_ALLOWED_FILE_DIRS env var (path.delimiter-separated). When unset,
  *   file:// uploads are disabled entirely (secure by default).
- * - Paths are canonically resolved (realpath, following symlinks) before any
- *   check, so symlink/".." escapes cannot bypass the allowlist.
+ * - Paths are canonically resolved (realpath) before any check, so symlink
+ *   and ".." escapes cannot bypass the allowlist. Hardlinks are NOT resolved
+ *   by realpath and are indistinguishable from ordinary files by design, so a
+ *   hardlink created inside an allowed directory does defeat both the
+ *   containment guarantee and the name-based blocklist below. That requires
+ *   local write access to the allowed directory.
  * - Well-known sensitive locations (secrets, credentials, system paths) are
- *   blocked regardless of the allowlist.
+ *   blocked regardless of the allowlist. This is best-effort defence in depth
+ *   layered on the allowlist, not a boundary in its own right.
+ *
+ * Rejections deliberately carry no filesystem detail: this tool is driven by a
+ * model whose inputs may be attacker-influenced, so a message distinguishing
+ * "does not exist" from "exists but denied" -- or echoing a resolved path --
+ * turns the tool into a filesystem existence and symlink-target oracle that
+ * needs no local access to query. Detail goes to stderr, not to the caller.
  */
 
 export const ALLOWED_FILE_DIRS_ENV = "BB_ALLOWED_FILE_DIRS";
 
-/** MIME types accepted for local receipt files, mirroring ALLOWED_CONTENT_TYPES. */
-const ALLOWED_RECEIPT_MIME_TYPES = new Set([
-  "application/pdf",
-  "image/png",
-  "image/jpeg",
-]);
+/**
+ * Every rejection reason collapses to this, so the caller learns only that the
+ * file was not usable. The basename comes from the caller's own input, so it
+ * reveals nothing they did not already supply.
+ */
+function accessDenied(rawPath: string, reason: string): Error {
+  console.error(`[file-access] denied ${rawPath}: ${reason}`);
+  return new Error(`Local file is not accessible: ${path.basename(rawPath)}`);
+}
 
 function expandTilde(p: string): string {
   if (p === "~") return os.homedir();
@@ -83,38 +96,30 @@ const SENSITIVE_FILENAMES = new Set([
   ".git-credentials",
 ]);
 
-function assertNotSensitivePath(resolved: string): void {
+function sensitivePathReason(resolved: string): string | null {
   const segments = resolved.split(/[\\/]+/).filter(Boolean).map((s) => s.toLowerCase());
   const fileName = path.basename(resolved).toLowerCase();
 
   // .env files and variants (.env, .env.local, .env.production, ...)
   if (segments.some((s) => s === ".env" || s.startsWith(".env."))) {
-    throw new Error(
-      `Access to '${resolved}' is not allowed: .env files may contain secrets and cannot be uploaded.`
-    );
+    return "matches .env";
   }
 
   for (const prefix of SENSITIVE_PATH_PREFIXES) {
     if (resolved === prefix || resolved.startsWith(prefix + "/")) {
-      throw new Error(
-        `Access to '${resolved}' is not allowed: path is in a restricted system location.`
-      );
+      return `restricted system location (${prefix})`;
     }
   }
 
   if (segments.some((s) => SENSITIVE_DIR_SEGMENTS.has(s))) {
-    throw new Error(
-      `Access to '${resolved}' is not allowed: path is in a directory that commonly contains secrets or credentials.`
-    );
+    return "inside a directory that commonly holds credentials";
   }
 
   const home = os.homedir();
   for (const dir of SENSITIVE_HOME_DIRS) {
     const blocked = path.join(home, dir);
     if (resolved === blocked || resolved.startsWith(blocked + path.sep)) {
-      throw new Error(
-        `Access to '${resolved}' is not allowed: path is in a directory that commonly contains secrets or credentials.`
-      );
+      return "inside a directory that commonly holds credentials";
     }
   }
 
@@ -122,20 +127,21 @@ function assertNotSensitivePath(resolved: string): void {
     SENSITIVE_FILENAMES.has(fileName) ||
     (fileName === "config.json" && segments.includes(".docker"))
   ) {
-    throw new Error(
-      `Access to '${resolved}' is not allowed: this file commonly contains secrets or credentials.`
-    );
+    return "well-known credential filename";
   }
+
+  return null;
 }
 
 /**
  * Validate that a local file path is safe to read for a receipt upload.
  *
- * Canonically resolves the path (following symlinks), applies the sensitive-path
- * blocklist, and requires the resolved path to fall inside one of the allowed
- * directories from BB_ALLOWED_FILE_DIRS (which are also canonically resolved).
+ * Canonically resolves the path, applies the sensitive-path blocklist, and
+ * requires the resolved path to fall inside one of the allowed directories
+ * from BB_ALLOWED_FILE_DIRS (which are also canonically resolved).
  *
- * Returns the resolved absolute path, or throws a descriptive error.
+ * Returns the resolved absolute path. Every failure throws the same opaque
+ * error -- see the note at the top of this file on why.
  */
 export async function validateReceiptFilePath(
   rawPath: string,
@@ -143,6 +149,7 @@ export async function validateReceiptFilePath(
 ): Promise<string> {
   const allowedDirs = getAllowedFileDirs(env);
   if (allowedDirs.length === 0) {
+    // Configuration state, not filesystem state: safe and useful to report.
     throw new Error(
       "Local file uploads via file:// URLs are disabled. " +
         `Set the ${ALLOWED_FILE_DIRS_ENV} environment variable to a list of permitted directories to enable them.`
@@ -153,21 +160,22 @@ export async function validateReceiptFilePath(
   try {
     resolved = await realpath(path.resolve(expandTilde(rawPath)));
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") {
-      throw new Error(`Local file does not exist: ${rawPath}`);
-    }
-    throw err;
+    // Includes ENOENT/ENOTDIR, and EINVAL for embedded NUL bytes. All collapse
+    // to the same message so existence cannot be probed.
+    throw accessDenied(rawPath, `realpath failed: ${(err as NodeJS.ErrnoException).code ?? "unknown"}`);
   }
 
-  assertNotSensitivePath(resolved);
+  const reason = sensitivePathReason(resolved);
+  if (reason) {
+    throw accessDenied(rawPath, `${resolved} -- ${reason}`);
+  }
 
   for (const dir of allowedDirs) {
     let resolvedDir: string;
     try {
       resolvedDir = await realpath(dir);
     } catch {
-      // Configured directory doesn't exist; nothing inside it can either.
+      // Configured directory does not exist; nothing inside it can either.
       continue;
     }
     const rel = path.relative(resolvedDir, resolved);
@@ -176,29 +184,5 @@ export async function validateReceiptFilePath(
     }
   }
 
-  throw new Error(
-    `Access to '${resolved}' is not allowed: path is outside permitted directories ` +
-      `(${allowedDirs.join(", ")}). Set ${ALLOWED_FILE_DIRS_ENV} to adjust.`
-  );
-}
-
-/**
- * Detect the MIME type of file content via its magic bytes (using file-type)
- * and reject anything that is not PDF/PNG/JPEG (the types the BB upload
- * endpoint accepts). Content-based detection cannot be fooled by renaming a
- * file's extension.
- */
-export async function detectReceiptMimeType(data: Uint8Array): Promise<string> {
-  const detected = await fileTypeFromBuffer(data);
-  if (!detected) {
-    throw new Error(
-      "Unsupported file type: no known file signature detected. Allowed: PDF, PNG, JPG"
-    );
-  }
-  if (!ALLOWED_RECEIPT_MIME_TYPES.has(detected.mime)) {
-    throw new Error(
-      `Unsupported file type: ${detected.mime}. Allowed: PDF, PNG, JPG`
-    );
-  }
-  return detected.mime;
+  throw accessDenied(rawPath, `${resolved} is outside ${allowedDirs.join(", ")}`);
 }

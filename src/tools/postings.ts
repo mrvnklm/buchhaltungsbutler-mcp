@@ -243,10 +243,12 @@ VAT codes: 0_none, 19_vat, 7_vat, 19_pre, 7_pre, 19_both_1, 19_both_2, 7_both, 1
 
           case "transaction": {
             if (params.transactions && params.transactions.length > 0) {
+              // JSON body for the same reason as the single-posting path above.
               const res = await client.request<BatchResponse>(
                 "/postings/add-batch/transactions",
                 { transactions: params.transactions },
-                "batch"
+                "batch",
+                "json"
               );
               const { successes } = splitBatchByRequestData(params.transactions, res.errors, "transaction_id_by_customer");
               return {
@@ -279,7 +281,15 @@ VAT codes: 0_none, 19_vat, 7_vat, 19_pre, 7_pre, 19_both_1, 19_both_2, 7_both, 1
             if (params.cost_locations_two !== undefined) requestParams.cost_locations_two = params.cost_locations_two;
             if (params.oi_receipts_ids_by_customer !== undefined) requestParams.oi_receipts_ids_by_customer = params.oi_receipts_ids_by_customer;
 
-            const res = await client.request<ApiResponse>("/postings/add/transaction", requestParams);
+            // JSON body: oi_receipts_ids_by_customer may contain nulls, which
+            // form encoding drops -- shifting the remaining ids onto the wrong
+            // split lines. See RequestEncoding in api/client.ts.
+            const res = await client.request<ApiResponse>(
+              "/postings/add/transaction",
+              requestParams,
+              "general",
+              "json"
+            );
             return {
               content: [{
                 type: "text" as const,

@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtemp, mkdir, writeFile, symlink, rm, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, symlink, link, rm, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
   getAllowedFileDirs,
   validateReceiptFilePath,
-  detectReceiptMimeType,
   ALLOWED_FILE_DIRS_ENV,
 } from "./file-access.js";
 
@@ -82,106 +81,116 @@ describe("validateReceiptFilePath", () => {
     expect(resolved).toBe(await realpath(path.join(allowedDir, "receipt.pdf")));
   });
 
+  // Every rejection must be indistinguishable, otherwise the tool becomes a
+  // filesystem oracle: a model driven by attacker-influenced content could probe
+  // for the existence of arbitrary paths, and read back symlink targets, without
+  // ever uploading anything. These tests assert the message reveals nothing.
+  const OPAQUE = /Local file is not accessible/;
+
+  async function rejectionMessage(p: string, dirs: string): Promise<string> {
+    try {
+      await validateReceiptFilePath(p, env(dirs));
+      throw new Error("expected rejection");
+    } catch (err) {
+      return (err as Error).message;
+    }
+  }
+
   it("rejects a file outside the allowed directories", async () => {
     await expect(
       validateReceiptFilePath(path.join(outsideDir, "secret.pdf"), env(allowedDir))
-    ).rejects.toThrow(/outside permitted directories/);
+    ).rejects.toThrow(OPAQUE);
   });
 
   it("rejects a symlink inside the allowed dir that points outside", async () => {
     await expect(
       validateReceiptFilePath(path.join(allowedDir, "sneaky-link.pdf"), env(allowedDir))
-    ).rejects.toThrow(/outside permitted directories/);
+    ).rejects.toThrow(OPAQUE);
   });
 
   it("rejects .. traversal out of the allowed dir", async () => {
-    const traversal = path.join(
-      allowedDir,
-      "..",
-      path.basename(outsideDir),
-      "secret.pdf"
-    );
-    await expect(validateReceiptFilePath(traversal, env(allowedDir))).rejects.toThrow(
-      /outside permitted directories/
-    );
+    const traversal = path.join(allowedDir, "..", path.basename(outsideDir), "secret.pdf");
+    await expect(validateReceiptFilePath(traversal, env(allowedDir))).rejects.toThrow(OPAQUE);
   });
 
   it("rejects non-existent files", async () => {
     await expect(
       validateReceiptFilePath(path.join(allowedDir, "missing.pdf"), env(allowedDir))
-    ).rejects.toThrow(/does not exist/);
+    ).rejects.toThrow(OPAQUE);
   });
 
   it("rejects .env files and variants even inside an allowed dir", async () => {
     await expect(
       validateReceiptFilePath(path.join(allowedDir, ".env"), env(allowedDir))
-    ).rejects.toThrow(/\.env files/);
+    ).rejects.toThrow(OPAQUE);
     await expect(
       validateReceiptFilePath(path.join(allowedDir, ".env.local"), env(allowedDir))
-    ).rejects.toThrow(/\.env files/);
+    ).rejects.toThrow(OPAQUE);
   });
 
   it("rejects .ssh and .aws path segments even inside an allowed dir", async () => {
     await expect(
       validateReceiptFilePath(path.join(allowedDir, ".ssh", "id_rsa.pdf"), env(allowedDir))
-    ).rejects.toThrow(/secrets or credentials/);
+    ).rejects.toThrow(OPAQUE);
     await expect(
       validateReceiptFilePath(path.join(allowedDir, ".aws", "config.pdf"), env(allowedDir))
-    ).rejects.toThrow(/secrets or credentials/);
+    ).rejects.toThrow(OPAQUE);
   });
 
   it("rejects well-known credential filenames even inside an allowed dir", async () => {
     await expect(
       validateReceiptFilePath(path.join(allowedDir, "credentials.json"), env(allowedDir))
-    ).rejects.toThrow(/secrets or credentials/);
+    ).rejects.toThrow(OPAQUE);
   });
 
   it("rejects restricted system locations", async () => {
-    // The blocklist must fire before the allowlist check, even if someone
-    // allowed the restricted directory itself. Uses /dev/null because it
-    // exists on both Linux and macOS -- the check runs after realpath(), so a
-    // path that does not exist on the test platform reports ENOENT instead and
-    // would not exercise the blocklist at all.
-    await expect(
-      validateReceiptFilePath("/dev/null", env("/dev"))
-    ).rejects.toThrow(/restricted system location/);
+    // /dev/null exists on both Linux and macOS. The blocklist runs after
+    // realpath(), so a path absent on the test platform would report ENOENT and
+    // never exercise it.
+    await expect(validateReceiptFilePath("/dev/null", env("/dev"))).rejects.toThrow(OPAQUE);
   });
 
   it.runIf(process.platform === "linux")("rejects /proc paths on Linux", async () => {
-    await expect(
-      validateReceiptFilePath("/proc/version", env("/proc"))
-    ).rejects.toThrow(/restricted system location/);
+    await expect(validateReceiptFilePath("/proc/version", env("/proc"))).rejects.toThrow(OPAQUE);
+  });
+
+  it("never leaks resolved paths, existence, or the allowlist in rejections", async () => {
+    const missing = await rejectionMessage(path.join(allowedDir, "missing.pdf"), allowedDir);
+    const denied = await rejectionMessage(path.join(outsideDir, "secret.pdf"), allowedDir);
+    const symlinked = await rejectionMessage(path.join(allowedDir, "sneaky-link.pdf"), allowedDir);
+    const sensitive = await rejectionMessage(path.join(allowedDir, ".env"), allowedDir);
+
+    // Existence must not be distinguishable from denial.
+    expect(denied).toBe(missing.replace("missing.pdf", "secret.pdf"));
+
+    for (const msg of [missing, denied, symlinked, sensitive]) {
+      expect(msg).not.toContain(allowedDir);
+      expect(msg).not.toContain(outsideDir);
+      expect(msg).not.toMatch(/does not exist|outside permitted|credentials|restricted/i);
+    }
+    // The symlink target must never be echoed back.
+    expect(symlinked).not.toContain("secret.pdf");
   });
 });
 
-describe("detectReceiptMimeType", () => {
-  const pdfBytes = Buffer.from("%PDF-1.4\n%%EOF");
-  // PNG signature + IHDR chunk header (enough for magic detection)
-  const pngBytes = Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    Buffer.from([0x00, 0x00, 0x00, 0x0d]),
-    Buffer.from("IHDR"),
-    Buffer.alloc(17),
-  ]);
-  const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00]);
+describe("known limits of path-based validation", () => {
+  it("does not resolve hardlinks -- documented gap, not a regression", async () => {
+    // realpath cannot distinguish a hardlink from the original file, so a
+    // hardlink created inside an allowed dir passes validation and also
+    // defeats the name-based blocklist (the blocklist only sees the link
+    // name). Requires local write access to the allowed directory. Asserted
+    // here so the limit is explicit rather than assumed away.
+    const target = path.join(outsideDir, "secret.pdf");
+    const hardlink = path.join(allowedDir, "hardlinked.pdf");
+    try {
+      await link(target, hardlink);
+    } catch {
+      return; // cross-device or unsupported; nothing to assert
+    }
 
-  it("detects allowed types from magic bytes", async () => {
-    await expect(detectReceiptMimeType(pdfBytes)).resolves.toBe("application/pdf");
-    await expect(detectReceiptMimeType(pngBytes)).resolves.toBe("image/png");
-    await expect(detectReceiptMimeType(jpegBytes)).resolves.toBe("image/jpeg");
-  });
-
-  it("rejects content without a known file signature (e.g. plain text)", async () => {
-    await expect(detectReceiptMimeType(Buffer.from("just some text"))).rejects.toThrow(
-      /Unsupported file type/
+    await expect(validateReceiptFilePath(hardlink, env(allowedDir))).resolves.toContain(
+      "hardlinked.pdf"
     );
-  });
-
-  it("rejects detectable but disallowed types", async () => {
-    const gifBytes = Buffer.from("GIF89a\x01\x00\x01\x00\x00\x00\x00");
-    await expect(detectReceiptMimeType(gifBytes)).rejects.toThrow(/image\/gif/);
-
-    const zipBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]);
-    await expect(detectReceiptMimeType(zipBytes)).rejects.toThrow(/Unsupported file type/);
+    await rm(hardlink, { force: true });
   });
 });

@@ -1,4 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -7,7 +8,7 @@ import type { BbClient } from "../api/client.js";
 import { ApiError } from "../api/errors.js";
 import type { ApiResponse, BatchResponse } from "../types/common.js";
 import type { ReceiptListItem, ReceiptDetail } from "../types/api-responses.js";
-import { validateReceiptFilePath, detectReceiptMimeType } from "../utils/file-access.js";
+import { validateReceiptFilePath } from "../utils/file-access.js";
 import { formatList, formatSingle, formatSuccess, formatBatchResult } from "../utils/formatters.js";
 import { fetchAllPages, paginationCapNote } from "../utils/pagination.js";
 import { dateSchema, receiptTypeSchema, listDirectionSchema, currencySchema } from "../utils/validators.js";
@@ -342,25 +343,52 @@ export async function fetchFileFromUrl(url: string): Promise<{ base64: string; f
  * Guarded by validateReceiptFilePath (BB_ALLOWED_FILE_DIRS allowlist +
  * sensitive-path blocklist); enforces the same size and type limits as
  * HTTP(S) fetches.
+ *
+ * Opens the path once and does every subsequent check against that file
+ * descriptor. Re-resolving the path string after validation would reopen a
+ * TOCTOU window: the allowed directory is by definition one the agent can
+ * write to, so a validated name can be swapped for a symlink pointing outside
+ * the allowlist between the check and the read.
  */
 async function readFileFromFileUrl(url: URL): Promise<{ base64: string; fileName: string }> {
   const rawPath = fileURLToPath(url);
   const resolvedPath = await validateReceiptFilePath(rawPath);
 
-  const stats = await stat(resolvedPath);
-  if (!stats.isFile()) {
-    throw new Error(`Path is not a regular file: ${resolvedPath}`);
+  // O_NOFOLLOW on the final component closes the remaining race: resolvedPath
+  // came out of realpath, so it contains no symlink by construction. If the
+  // name has since been swapped for one, the open fails instead of following
+  // it out of the allowlist. (Not supported on Windows, where it is omitted.)
+  const openFlags =
+    process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
+  const handle = await open(resolvedPath, openFlags);
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+      throw new Error("Local file is not accessible: not a regular file");
+    }
+    if (stats.size > MAX_FILE_SIZE) {
+      throw new Error(`File too large: ${stats.size} bytes (max ${MAX_FILE_SIZE})`);
+    }
+
+    // Bounded read from the same descriptor: readFile() honours no cap, so a
+    // file that grows after the stat would be read in full.
+    const buffer = Buffer.alloc(stats.size);
+    const { bytesRead } = await handle.read(buffer, 0, stats.size, 0);
+    const data = new Uint8Array(buffer.subarray(0, bytesRead));
+
+    // Local files carry no Content-Type header; gate on magic bytes instead,
+    // using the same sniffer as the http path so both agree on what a PDF is.
+    if (!sniffContentType(data)) {
+      throw new Error("Unsupported file type: content is not a PDF, PNG, or JPEG");
+    }
+
+    return {
+      base64: Buffer.from(data).toString("base64"),
+      fileName: sanitizeFileName(path.basename(resolvedPath)),
+    };
+  } finally {
+    await handle.close();
   }
-  if (stats.size > MAX_FILE_SIZE) {
-    throw new Error(`File too large: ${stats.size} bytes (max ${MAX_FILE_SIZE})`);
-  }
-
-  const data = await readFile(resolvedPath);
-
-  // Local files carry no Content-Type header; gate on magic bytes instead.
-  await detectReceiptMimeType(data);
-
-  return { base64: data.toString("base64"), fileName: path.basename(resolvedPath) };
 }
 
 export function registerReceiptsTools(server: McpServer, client: BbClient): void {
