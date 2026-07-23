@@ -1,4 +1,17 @@
 import type { BbConfig, RetryConfig, RateLimitBucket } from "../types/common.js";
+
+/**
+ * Request body format. The API has been served x-www-form-urlencoded since
+ * v1.0 and that is what the README documents, so it stays the default -- it is
+ * the only format with production evidence behind it.
+ *
+ * "json" exists for the one case form encoding cannot express: a null element
+ * inside an array. encodeParams skips null values, so `[1396, null]` would
+ * encode as `oi_receipts_ids_by_customer[0]=1396` and the null slot would
+ * vanish, silently shifting the remaining ids onto the wrong split lines.
+ * Opt into it per call, not globally.
+ */
+export type RequestEncoding = "form" | "json";
 import { RateLimiter } from "./rate-limiter.js";
 import { ApiError } from "./errors.js";
 import { CacheManager } from "./cache.js";
@@ -22,7 +35,8 @@ export class BbClient {
   async request<T = unknown>(
     path: string,
     params: Record<string, unknown> = {},
-    bucket: RateLimitBucket = "general"
+    bucket: RateLimitBucket = "general",
+    encoding: RequestEncoding = "form"
   ): Promise<T> {
     if (this.cache.isCacheable(path)) {
       const cacheKey = this.cache.buildKey(path, params);
@@ -35,7 +49,8 @@ export class BbClient {
       await this.rateLimiter.acquire(bucket);
     }
 
-    const body = this.encodeParams({ api_key: this.config.apiKey, ...params });
+    const payload = { api_key: this.config.apiKey, ...params };
+    const body = encoding === "json" ? JSON.stringify(payload) : this.encodeParams(payload);
     const { maxAttempts } = this.retryConfig;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -44,7 +59,8 @@ export class BbClient {
           method: "POST",
           headers: {
             Authorization: this.authHeader,
-            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Type":
+              encoding === "json" ? "application/json" : "application/x-www-form-urlencoded",
           },
           body,
         });

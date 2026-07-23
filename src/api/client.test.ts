@@ -204,3 +204,64 @@ describe("BbClient", () => {
     });
   });
 });
+
+describe("BbClient request encoding", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function captureRequest() {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockFetchResponse({ success: true })
+    );
+    return () => spy.mock.calls[0][1] as RequestInit;
+  }
+
+  it("defaults to form encoding -- the format the API has been served since v1.0", async () => {
+    const get = captureRequest();
+    await new BbClient(baseConfig).request("/receipts/get", { limit: 10, deleted: false });
+
+    const init = get();
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/x-www-form-urlencoded"
+    );
+    expect(init.body).toContain("limit=10");
+    expect(init.body).toContain("deleted=false");
+  });
+
+  it("keeps nested batch structures in bracket form by default", async () => {
+    const get = captureRequest();
+    await new BbClient(baseConfig).request("/receipts/addBatch", {
+      receipts: [{ type: "invoice" }],
+    });
+
+    expect(get().body).toContain("receipts%5B0%5D%5Btype%5D=invoice");
+  });
+
+  it("sends JSON only when explicitly asked", async () => {
+    const get = captureRequest();
+    await new BbClient(baseConfig).request(
+      "/postings/add/transaction",
+      { oi_receipts_ids_by_customer: [1396, null] },
+      "general",
+      "json"
+    );
+
+    const init = get();
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+    // The whole point: form encoding drops the null and shifts the remaining
+    // ids onto the wrong split lines.
+    expect(JSON.parse(init.body as string).oi_receipts_ids_by_customer).toEqual([1396, null]);
+  });
+
+  it("form encoding cannot express a null array element -- why the opt-in exists", async () => {
+    const get = captureRequest();
+    await new BbClient(baseConfig).request("/postings/add/transaction", {
+      oi_receipts_ids_by_customer: [1396, null],
+    });
+
+    const body = get().body as string;
+    expect(body).toContain("oi_receipts_ids_by_customer%5B0%5D=1396");
+    expect(body).not.toContain("%5B1%5D");
+  });
+});

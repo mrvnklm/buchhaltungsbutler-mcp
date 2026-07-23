@@ -141,7 +141,7 @@ VAT codes: 0_none, 19_vat, 7_vat, 19_pre, 7_pre, 19_both_1, 19_both_2, 7_both, 1
       debtor: z.number().int().optional().describe("Debtor posting account number (receipt only)"),
       cost_locations: z.array(z.string()).optional().describe("Cost location codes for each split"),
       cost_locations_two: z.array(z.string()).optional().describe("Secondary cost location codes for each split"),
-      oi_receipts_ids_by_customer: z.array(z.number().int()).optional().describe("Original invoice receipt IDs (transaction only)"),
+      oi_receipts_ids_by_customer: z.array(z.number().int().nullable()).optional().describe("Open-item (OI) receipt IDs, one per split line, assigned directly to the respective partial posting (transaction only). Use null for a split line that clears no receipt. Required when OI postings are activated in the customer account."),
 
       // Free posting single fields
       date: dateSchema.optional().describe("Posting date YYYY-MM-DD (required for free type)"),
@@ -174,7 +174,7 @@ VAT codes: 0_none, 19_vat, 7_vat, 19_pre, 7_pre, 19_both_1, 19_both_2, 7_both, 1
         amounts: z.array(z.string()),
         cost_locations: z.array(z.string()).optional(),
         cost_locations_two: z.array(z.string()).optional(),
-        oi_receipts_ids_by_customer: z.array(z.number().int()).optional(),
+        oi_receipts_ids_by_customer: z.array(z.number().int().nullable()).optional().describe("Open-item (OI) receipt IDs, one per split line; use null for a split line that clears no receipt. Required when OI postings are activated in the customer account."),
       })).max(50).optional().describe("Array of transaction postings for batch creation (max 50)"),
 
       free_postings: z.array(z.object({
@@ -243,10 +243,12 @@ VAT codes: 0_none, 19_vat, 7_vat, 19_pre, 7_pre, 19_both_1, 19_both_2, 7_both, 1
 
           case "transaction": {
             if (params.transactions && params.transactions.length > 0) {
+              // JSON body for the same reason as the single-posting path above.
               const res = await client.request<BatchResponse>(
                 "/postings/add-batch/transactions",
                 { transactions: params.transactions },
-                "batch"
+                "batch",
+                "json"
               );
               const { successes } = splitBatchByRequestData(params.transactions, res.errors, "transaction_id_by_customer");
               return {
@@ -279,7 +281,15 @@ VAT codes: 0_none, 19_vat, 7_vat, 19_pre, 7_pre, 19_both_1, 19_both_2, 7_both, 1
             if (params.cost_locations_two !== undefined) requestParams.cost_locations_two = params.cost_locations_two;
             if (params.oi_receipts_ids_by_customer !== undefined) requestParams.oi_receipts_ids_by_customer = params.oi_receipts_ids_by_customer;
 
-            const res = await client.request<ApiResponse>("/postings/add/transaction", requestParams);
+            // JSON body: oi_receipts_ids_by_customer may contain nulls, which
+            // form encoding drops -- shifting the remaining ids onto the wrong
+            // split lines. See RequestEncoding in api/client.ts.
+            const res = await client.request<ApiResponse>(
+              "/postings/add/transaction",
+              requestParams,
+              "general",
+              "json"
+            );
             return {
               content: [{
                 type: "text" as const,

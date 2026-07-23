@@ -16,7 +16,7 @@ An MCP (Model Context Protocol) server that connects AI assistants like Claude t
 - **Caching layer** for static endpoints (accounts, posting accounts, cost locations) with TTL and write-triggered invalidation
 - **Auto-pagination** fetches all pages automatically via `auto_paginate` parameter on `list_transactions`, `list_receipts`, and `list_postings`
 - **Response truncation** with configurable `max_results` to prevent token overflow on large result sets
-- **File upload from URL** in `upload_receipt` — accepts a URL, fetches server-side with content-type and size validation
+- **File upload from URL** in `upload_receipt` — accepts an http(s) URL (fetched server-side with content-type and size validation) or a `file://` URL for local files, restricted to directories explicitly allowed via `BB_ALLOWED_FILE_DIRS` (opt-in, disabled by default)
 - **Rate limiting** — token-bucket throttling per BB API endpoint category (general, batch, upload); see [`src/api/rate-limiter.ts`](src/api/rate-limiter.ts) for exact burst/refill values
 - **E-invoicing** support (XRechnung/ZUGFeRD) with structured tax data
 - **Zod validation** on all tool inputs with descriptive error messages
@@ -142,7 +142,7 @@ This server uses the stdio MCP transport (a local process launched via `npx`), s
 | `list_receipts` | List receipts (Belege) with filters (direction, dates, status, counterparty) |
 | `get_receipt` | Get a single receipt by ID, optionally including file content |
 | `create_receipt` | Create one or batch (up to 50) receipts |
-| `upload_receipt` | Upload a receipt file (base64 or URL) with optional metadata |
+| `upload_receipt` | Upload a receipt file (base64, http(s) URL, or file:// URL) with optional metadata |
 | `manage_receipt` | Delete or restore a receipt |
 
 ### Postings
@@ -231,6 +231,23 @@ src/
 | `BB_RETRY_MAX_ATTEMPTS` | No | `3` | Max retry attempts on transient errors |
 | `BB_RETRY_BASE_DELAY_MS` | No | `1000` | Base delay for exponential backoff (ms) |
 | `BB_RETRY_MAX_DELAY_MS` | No | `8000` | Max delay cap for backoff (ms) |
+| `BB_ALLOWED_FILE_DIRS` | No | - (file:// uploads disabled) | Directories from which `upload_receipt` may read local files via `file://` URLs. Separated by the platform path delimiter (`:` on Linux/macOS, `;` on Windows); a leading `~` is expanded. See the note below before enabling. |
+
+> **Before enabling `BB_ALLOWED_FILE_DIRS`:** this lets the model read files from
+> the listed directories and upload them to BuchhaltungsButler. Tool arguments can
+> be influenced by content the model has read (a web page, an email, a PDF), so
+> treat an allowed directory as "anything in here may leave the machine". Point it
+> at a dedicated receipts folder, not at `~` or a whole project tree.
+>
+> Paths are canonically resolved before checking, so symlinks and `..` cannot
+> escape the allowlist, and the final open uses `O_NOFOLLOW` so a name swapped
+> after validation is refused rather than followed. Well-known sensitive locations
+> (`.env` files, `.ssh`/`.aws`, credential filenames, `/proc`, `/dev`, …) are
+> blocked outright — but that blocklist is best-effort defence in depth, not a
+> boundary. Two limits are inherent: **hardlinks** are indistinguishable from
+> ordinary files, so a hardlink created inside an allowed directory reaches its
+> target and bypasses the name-based blocklist; and anything genuinely inside an
+> allowed directory is readable regardless of what it contains.
 
 ## MCP Resources
 

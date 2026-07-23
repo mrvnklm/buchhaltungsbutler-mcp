@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerPostingsTools } from "./postings.js";
 import type { BbClient } from "../api/client.js";
@@ -149,5 +150,72 @@ describe("create_posting batch success/error attribution", () => {
     expect(text).toMatch(/ID:\s*posting-C/);
     const succeededSection = text.split("Failed:")[0];
     expect(succeededSection).not.toMatch(/ID:\s*posting-A(\D|$)/);
+  });
+});
+
+describe("OI postings: null split lines", () => {
+  // The earlier version of this change moved the endpoint to a JSON body but
+  // left the schema as z.array(z.number().int()), so null was rejected by
+  // validation before it ever reached the client -- the feature was inert and
+  // a client-level test did not catch it, because it bypassed Zod. This test
+  // goes through the registered schema on purpose.
+  function schemaFor(toolName: string): z.ZodType {
+    const shapes = new Map<string, Record<string, z.ZodType>>();
+    const server = {
+      tool: (name: string, _desc: string, shape: Record<string, z.ZodType>) => {
+        shapes.set(name, shape);
+      },
+    } as unknown as McpServer;
+    registerPostingsTools(server, { request: vi.fn() } as unknown as BbClient);
+    const shape = shapes.get(toolName);
+    if (!shape) throw new Error(`${toolName} not registered`);
+    return z.object(shape);
+  }
+
+  it("accepts null elements through the registered tool schema", () => {
+    const parsed = schemaFor("create_posting").safeParse({
+      posting_type: "transaction",
+      transaction_id_by_customer: 5468,
+      postingaccounts: ["1200"],
+      postingtexts: ["Zahlung"],
+      vats: ["19_vat"],
+      amounts: ["97.48"],
+      oi_receipts_ids_by_customer: [1396, null],
+    });
+
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.oi_receipts_ids_by_customer).toEqual([1396, null]);
+    }
+  });
+
+  it("accepts null elements in the batch shape too", () => {
+    const parsed = schemaFor("create_posting").safeParse({
+      posting_type: "transaction",
+      transactions: [{
+        transaction_id_by_customer: 5468,
+        postingaccounts: ["1200"],
+        postingtexts: ["Zahlung"],
+        vats: ["19_vat"],
+        amounts: ["97.48"],
+        oi_receipts_ids_by_customer: [null, 1396],
+      }],
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it("still rejects non-integer, non-null elements", () => {
+    const parsed = schemaFor("create_posting").safeParse({
+      posting_type: "transaction",
+      transaction_id_by_customer: 5468,
+      postingaccounts: ["1200"],
+      postingtexts: ["Zahlung"],
+      vats: ["19_vat"],
+      amounts: ["97.48"],
+      oi_receipts_ids_by_customer: ["1396"],
+    });
+
+    expect(parsed.success).toBe(false);
   });
 });
