@@ -12,6 +12,37 @@ import type { BbConfig, RetryConfig, RateLimitBucket } from "../types/common.js"
  * Opt into it per call, not globally.
  */
 export type RequestEncoding = "form" | "json";
+
+// Error codes that would surface if the API did not parse a JSON body at all:
+// api_key travels inside that body, so failing to read it looks like missing
+// credentials (3) or an empty POST (23) rather than a format complaint.
+const BODY_PARSE_ERROR_CODES = new Set([3, 23]);
+
+/**
+ * The JSON body format is what the published Swagger spec declares (every
+ * parameter is `in: body`), but it has no production track record -- only the
+ * form encoding does. If one of the few JSON calls fails in a way consistent
+ * with the body not being read, say so, so the report names the likely cause
+ * instead of "credentials unknown".
+ *
+ * Deliberately only a hint: retrying automatically with form encoding could
+ * duplicate a posting that the server already accepted before the response
+ * failed, and a silent double booking is worse than a visible error.
+ */
+function withEncodingHint(
+  message: string | undefined,
+  encoding: RequestEncoding,
+  errorCode: number
+): string | undefined {
+  if (encoding !== "json" || !BODY_PARSE_ERROR_CODES.has(errorCode)) return message;
+  const base = message ?? `API error ${errorCode}`;
+  return (
+    `${base}\n\nNote: this endpoint sends a JSON request body (needed so null entries in ` +
+    `oi_receipts_ids_by_customer survive, which form encoding drops). If the API rejected the ` +
+    `body format rather than the credentials, please report this at ` +
+    `https://github.com/mrvnklm/buchhaltungsbutler-mcp/issues -- other endpoints are unaffected.`
+  );
+}
 import { RateLimiter } from "./rate-limiter.js";
 import { ApiError } from "./errors.js";
 import { CacheManager } from "./cache.js";
@@ -78,10 +109,11 @@ export class BbClient {
         }
 
         if (!response.ok || json.success === false) {
+          const errorCode = (json.error_code as number) ?? 0;
           throw new ApiError(
-            (json.error_code as number) ?? 0,
+            errorCode,
             response.status,
-            (json.message as string) ?? undefined
+            withEncodingHint((json.message as string) ?? undefined, encoding, errorCode)
           );
         }
 

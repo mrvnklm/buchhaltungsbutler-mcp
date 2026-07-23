@@ -265,3 +265,42 @@ describe("BbClient request encoding", () => {
     expect(body).not.toContain("%5B1%5D");
   });
 });
+
+describe("JSON body-format hint", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function failWith(errorCode: number) {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockFetchResponse({ success: false, error_code: errorCode, message: "API credentials unknown or invalid" })
+    );
+    return new BbClient(baseConfig);
+  }
+
+  it("hints at the body format when a JSON call fails like an unparsed body", async () => {
+    // api_key rides inside the body, so a body the server never read looks
+    // like bad credentials -- which would send someone down the wrong path.
+    await expect(
+      failWith(3).request("/postings/add/transaction", {}, "general", "json")
+    ).rejects.toThrow(/JSON request body[\s\S]*issues/);
+  });
+
+  it("hints on error 23 (no post content) too", async () => {
+    await expect(
+      failWith(23).request("/postings/add/transaction", {}, "general", "json")
+    ).rejects.toThrow(/report this at/);
+  });
+
+  it("does not hint on form-encoded calls", async () => {
+    await expect(
+      failWith(3).request("/receipts/get", {})
+    ).rejects.toThrow(/^API credentials unknown or invalid$/);
+  });
+
+  it("does not hint on unrelated errors from a JSON call", async () => {
+    await expect(
+      failWith(8).request("/postings/add/transaction", {}, "general", "json")
+    ).rejects.not.toThrow(/report this at/);
+  });
+});
